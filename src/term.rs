@@ -687,9 +687,10 @@ impl TerminalEmulator {
             self.cells[self.cursor_row][self.cursor_col] = Some(cell);
         }
 
-        self.cursor_col = (self.cursor_col + width).min(self.width);
+        self.cursor_col += width;
         if self.cursor_col >= self.width {
-            self.cursor_col = self.width.saturating_sub(1);
+            self.linefeed();
+            self.cursor_col = 0;
         }
     }
 

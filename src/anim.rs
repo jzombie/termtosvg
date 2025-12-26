@@ -16,7 +16,37 @@ pub const CELL_HEIGHT: u16 = 17;
 const FRAME_CELL_SPACING: i32 = 1;
 const TERMTOSVG_NS: &str = "https://github.com/nbedos/termtosvg";
 
-type DefinitionMap = IndexMap<String, Element>;
+type DefinitionMap = IndexMap<DefinitionKey, Element>;
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct DefinitionKey(Vec<TextRunKey>);
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct TextRunKey {
+    column: usize,
+    text: String,
+    color: String,
+    use_fill_attribute: bool,
+    bold: bool,
+    italics: bool,
+    underscore: bool,
+    strikethrough: bool,
+}
+
+impl TextRunKey {
+    fn from_character(column: usize, text: &str, cell: &CharacterCell) -> Self {
+        TextRunKey {
+            column,
+            text: text.to_string(),
+            color: cell.color.clone(),
+            use_fill_attribute: cell.color.starts_with('#'),
+            bold: cell.bold,
+            italics: cell.italics,
+            underscore: cell.underscore,
+            strikethrough: cell.strikethrough,
+        }
+    }
+}
 
 static BG_RECT: Lazy<Element> = Lazy::new(|| {
     let mut rect = Element::new("rect");
@@ -193,8 +223,6 @@ pub fn render_animation<I: IntoIterator<Item = TimedFrame>, P: AsRef<Path>>(
     };
     embed_css(&mut root, timings_option, animation_duration)?;
 
-    restore_template_whitespace(&mut root);
-
     let mut file = File::create(filename)?;
     let bytes = emit_svg_bytes(&root)?;
     file.write_all(&bytes)?;
@@ -228,8 +256,6 @@ pub fn render_still_frames<I: IntoIterator<Item = TimedFrame>, P: AsRef<Path>>(
         }
 
         embed_css(&mut frame_root, None, None)?;
-
-        restore_template_whitespace(&mut frame_root);
 
         let filename = directory.as_ref().join(format!("termtosvg_{:05}.svg", idx));
         let mut file = File::create(filename)?;
@@ -300,21 +326,19 @@ fn render_line(
     }
 
     // text group
-    let text_group = render_characters(row_data, cell_width);
-    let serialized = serialize_element(&text_group);
+    let (mut text_group, definition_key) = render_characters_with_key(row_data, cell_width);
     let mut new_defs = DefinitionMap::new();
     let mut group_id = None;
     if let Some(existing) = definitions
-        .get(&serialized)
-        .or_else(|| local_defs.get(&serialized))
+        .get(&definition_key)
+        .or_else(|| local_defs.get(&definition_key))
     {
         group_id = existing.attributes.get("id").cloned();
     }
     if group_id.is_none() {
         let id = format!("g{}", definitions.len() + local_defs.len() + 1);
-        let mut tg = text_group.clone();
-        tg.attributes.insert("id".into(), id.clone());
-        new_defs.insert(serialized.clone(), tg);
+        text_group.attributes.insert("id".into(), id.clone());
+        new_defs.insert(definition_key, text_group);
         group_id = Some(id);
     }
     if let Some(id) = group_id {
@@ -382,10 +406,14 @@ pub fn render_line_bg_colors(
     rects
 }
 
-pub fn render_characters(row: &BTreeMap<usize, CharacterCell>, cell_width: u16) -> Element {
+fn render_characters_with_key(
+    row: &BTreeMap<usize, CharacterCell>,
+    cell_width: u16,
+) -> (Element, DefinitionKey) {
     let mut text_group = Element::new("g");
+    let mut run_keys = Vec::new();
     if row.is_empty() {
-        return text_group;
+        return (text_group, DefinitionKey(run_keys));
     }
 
     let mut sorted: Vec<(usize, &CharacterCell)> = row.iter().map(|(c, cell)| (*c, cell)).collect();
@@ -411,24 +439,56 @@ pub fn render_characters(row: &BTreeMap<usize, CharacterCell>, cell_width: u16) 
             current_text.push_str(&cell.text);
         } else {
             if let Some(prev_key) = current_key {
-                let grouped_cell = cell_from_key(prev_key, &current_text);
-                let elem = make_text_tag(current_col, &grouped_cell, &current_text, cell_width);
-                text_group.children.push(XMLNode::Element(elem));
+                append_text_run(
+                    &mut text_group,
+                    &mut run_keys,
+                    current_col,
+                    prev_key,
+                    &current_text,
+                    cell_width,
+                );
             }
             current_key = Some(key);
             current_col = col;
-            current_text = cell.text.clone();
+            current_text.clear();
+            current_text.push_str(&cell.text);
         }
         last_col = Some(col);
     }
 
     if let Some(prev_key) = current_key {
-        let grouped_cell = cell_from_key(prev_key, &current_text);
-        let elem = make_text_tag(current_col, &grouped_cell, &current_text, cell_width);
-        text_group.children.push(XMLNode::Element(elem));
+        append_text_run(
+            &mut text_group,
+            &mut run_keys,
+            current_col,
+            prev_key,
+            &current_text,
+            cell_width,
+        );
     }
 
-    text_group
+    (text_group, DefinitionKey(run_keys))
+}
+
+fn append_text_run(
+    text_group: &mut Element,
+    run_keys: &mut Vec<TextRunKey>,
+    column: usize,
+    run_key: ConsecutiveKey<'_>,
+    text: &str,
+    cell_width: u16,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let grouped_cell = cell_from_key(run_key, text);
+    run_keys.push(TextRunKey::from_character(column, text, &grouped_cell));
+    let elem = make_text_tag(column, &grouped_cell, text, cell_width);
+    text_group.children.push(XMLNode::Element(elem));
+}
+
+pub fn render_characters(row: &BTreeMap<usize, CharacterCell>, cell_width: u16) -> Element {
+    render_characters_with_key(row, cell_width).0
 }
 
 fn cell_from_key(key: ConsecutiveKey<'_>, text: &str) -> CharacterCell {
@@ -669,116 +729,13 @@ fn adjust_numeric_attr(element: &mut Element, name: &str, delta: i32) -> Result<
     Ok(())
 }
 
-fn restore_template_whitespace(root: &mut Element) {
-    let mut defs_elem: Option<Element> = None;
-    let mut screen_elem: Option<Element> = None;
-    let mut others: Vec<XMLNode> = Vec::new();
-
-    for child in root.children.drain(..) {
-        match child {
-            XMLNode::Element(elem) if node_name_eq(&elem, "defs") => defs_elem = Some(elem),
-            XMLNode::Element(elem)
-                if elem.name == "svg"
-                    && elem
-                        .attributes
-                        .get("id")
-                        .map(|id| id == "screen")
-                        .unwrap_or(false) =>
-            {
-                screen_elem = Some(elem)
-            }
-            XMLNode::Text(text) if text.trim().is_empty() => continue,
-            other => others.push(other),
-        }
-    }
-
-    let mut rebuilt = Vec::new();
-
-    if let Some(mut defs) = defs_elem {
-        format_defs_children(&mut defs);
-        rebuilt.push(XMLNode::Text("\n    ".into()));
-        rebuilt.push(XMLNode::Element(defs));
-    }
-
-    if let Some(mut screen) = screen_elem {
-        format_screen_children(&mut screen);
-        if rebuilt.is_empty() {
-            rebuilt.push(XMLNode::Text("\n    ".into()));
-        } else {
-            rebuilt.push(XMLNode::Text("\n    ".into()));
-        }
-        rebuilt.push(XMLNode::Element(screen));
-        rebuilt.push(XMLNode::Text("\n".into()));
-    }
-
-    if !others.is_empty() {
-        rebuilt.extend(others);
-    }
-
-    if rebuilt.is_empty() {
-        root.children = Vec::new();
-    } else {
-        root.children = rebuilt;
-    }
-}
-
-fn format_defs_children(defs: &mut Element) {
-    let mut meaningful = Vec::new();
-    for child in defs.children.drain(..) {
-        match &child {
-            XMLNode::Text(text) if text.trim().is_empty() => continue,
-            _ => meaningful.push(child),
-        }
-    }
-
-    if meaningful.is_empty() {
-        defs.children.clear();
-        return;
-    }
-
-    let mut rebuilt = Vec::new();
-    for child in meaningful {
-        rebuilt.push(XMLNode::Text("\n        ".into()));
-        rebuilt.push(child);
-    }
-    rebuilt.push(XMLNode::Text("\n    ".into()));
-    defs.children = rebuilt;
-}
-
-fn format_screen_children(screen: &mut Element) {
-    let mut meaningful = Vec::new();
-    for child in screen.children.drain(..) {
-        match &child {
-            XMLNode::Text(text) if text.trim().is_empty() => continue,
-            _ => meaningful.push(child),
-        }
-    }
-
-    if meaningful.is_empty() {
-        screen.children.clear();
-        return;
-    }
-
-    let mut rebuilt = Vec::new();
-    rebuilt.push(XMLNode::Text("\n    ".into()));
-    rebuilt.extend(meaningful);
-    screen.children = rebuilt;
-}
-
 fn emit_svg_bytes(element: &Element) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     element.write_with_config(
         &mut buf,
-        EmitterConfig::new()
-            .write_document_declaration(false)
-            .pad_self_closing(false),
+        EmitterConfig::new().write_document_declaration(false),
     )?;
     Ok(buf)
-}
-
-fn serialize_element(element: &Element) -> String {
-    let bytes = emit_svg_bytes(element).expect("Failed to serialize element");
-    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn find_style_mut(root: &mut Element) -> Option<&mut Element> {
