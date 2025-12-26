@@ -14,7 +14,12 @@ use crate::term::TimedFrame;
 pub const CELL_WIDTH: u16 = 8;
 pub const CELL_HEIGHT: u16 = 17;
 const FRAME_CELL_SPACING: i32 = 1;
-const DEFAULT_TERMTOSVG_NS: &str = "https://github.com/jzombie/termtosvg-rs";
+const DEFAULT_TERMTOSVG_NS: &str = {
+    match option_env!("CARGO_PKG_REPOSITORY") {
+        Some(v) if !v.is_empty() => v,
+        _ => "",
+    }
+};
 
 type DefinitionMap = IndexMap<DefinitionKey, Element>;
 
@@ -560,9 +565,11 @@ fn ensure_template_settings(defs: &mut Element, columns: u16, rows: u16) -> Resu
     let settings = ensure_child(defs, "template_settings", || {
         Element::new("termtosvg:template_settings")
     });
-    settings
-        .attributes
-        .insert("xmlns:termtosvg".into(), namespace.clone());
+    if !namespace.is_empty() {
+        settings
+            .attributes
+            .insert("xmlns:termtosvg".into(), namespace.clone());
+    }
 
     let _animation = ensure_child(settings, "animation", || {
         let mut element = Element::new("termtosvg:animation");

@@ -4,7 +4,7 @@ use std::os::unix::io::RawFd;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use rand::{Rng, distributions::Alphanumeric};
+use rand::{distr::Alphanumeric, Rng};
 use tempfile::NamedTempFile;
 
 use crate::anim;
@@ -327,7 +327,7 @@ fn temp_cast_file() -> String {
 }
 
 fn temp_still_dir() -> Result<String> {
-    let rand_suffix: String = rand::thread_rng()
+    let rand_suffix: String = rand::rng()
         .sample_iter(&Alphanumeric)
         .take(10)
         .map(char::from)

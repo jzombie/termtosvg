@@ -8,7 +8,7 @@ use nix::poll::{PollFd, PollFlags, poll};
 use nix::pty::{Winsize, openpty};
 use nix::sys::termios::{self, SetArg, Termios};
 use nix::sys::wait::waitpid;
-use nix::unistd::{ForkResult, Pid, close, dup2, execvp, fork, read, write};
+use nix::unistd::{ForkResult, Pid, execvp, fork, read, write};
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
@@ -111,11 +111,13 @@ fn spawn_pty(process_args: &[String], columns: u16, lines: u16) -> nix::Result<(
             let _ = nix::unistd::setsid();
             let _ = unsafe { libc::ioctl(slave_fd, libc::TIOCSCTTY as libc::c_ulong, 0) };
             // Redirect stdio to slave
-            let _ = dup2(slave_fd, libc::STDIN_FILENO);
-            let _ = dup2(slave_fd, libc::STDOUT_FILENO);
-            let _ = dup2(slave_fd, libc::STDERR_FILENO);
-            let _ = close(master_fd);
-            let _ = close(slave_fd);
+            unsafe {
+                libc::dup2(slave_fd, libc::STDIN_FILENO);
+                libc::dup2(slave_fd, libc::STDOUT_FILENO);
+                libc::dup2(slave_fd, libc::STDERR_FILENO);
+                libc::close(master_fd);
+                libc::close(slave_fd);
+            }
 
             if !process_args.is_empty() {
                 let prog = std::ffi::CString::new(process_args[0].as_str()).unwrap();
@@ -128,7 +130,9 @@ fn spawn_pty(process_args: &[String], columns: u16, lines: u16) -> nix::Result<(
             std::process::exit(1);
         }
         ForkResult::Parent { child } => {
-            let _ = close(slave_fd);
+            unsafe {
+                libc::close(slave_fd);
+            }
             Ok((master_fd, child))
         }
     }
@@ -154,63 +158,65 @@ pub fn record(
         Err(_) => return records,
     };
 
-    // Make master non-blocking
-    let _ = fcntl(master_fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK));
-
     let mut start = None;
     let mut running = true;
     let mut buf = [0u8; 1024];
 
-    let input_fd = unsafe { BorrowedFd::borrow_raw(input_fileno) };
-    let master_fd_borrowed = unsafe { BorrowedFd::borrow_raw(master_fd) };
+    {
+        let input_fd = unsafe { BorrowedFd::borrow_raw(input_fileno) };
+        let output_fd = unsafe { BorrowedFd::borrow_raw(output_fileno) };
+        let master_fd_borrowed = unsafe { BorrowedFd::borrow_raw(master_fd) };
 
-    while running {
-        let mut fds = [
-            PollFd::new(&input_fd, PollFlags::POLLIN),
-            PollFd::new(&master_fd_borrowed, PollFlags::POLLIN),
-        ];
+        let _ = fcntl(master_fd_borrowed, FcntlArg::F_SETFL(OFlag::O_NONBLOCK));
 
-        let _ = poll(&mut fds, 100);
+        while running {
+            let mut fds = [
+                PollFd::new(input_fd, PollFlags::POLLIN),
+                PollFd::new(master_fd_borrowed, PollFlags::POLLIN),
+            ];
 
-        // stdin -> pty
-        if let Some(revents) = fds[0].revents() {
-            if revents.contains(PollFlags::POLLIN) {
-                match read(input_fileno, &mut buf) {
-                    Ok(0) => running = false,
-                    Ok(n) => {
-                        let _ = write(master_fd, &buf[..n]);
-                    }
-                    Err(err) => {
-                        if err != nix::errno::Errno::EAGAIN {
-                            running = false;
+            let _ = poll(&mut fds, 100u16);
+
+            // stdin -> pty
+            if let Some(revents) = fds[0].revents() {
+                if revents.contains(PollFlags::POLLIN) {
+                    match read(input_fd, &mut buf) {
+                        Ok(0) => running = false,
+                        Ok(n) => {
+                            let _ = write(master_fd_borrowed, &buf[..n]);
+                        }
+                        Err(err) => {
+                            if err != nix::errno::Errno::EAGAIN {
+                                running = false;
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // pty -> stdout + records
-        if let Some(revents) = fds[1].revents() {
-            if revents.contains(PollFlags::POLLIN) {
-                match read(master_fd, &mut buf) {
-                    Ok(0) => running = false,
-                    Ok(n) => {
-                        let now = Instant::now();
-                        if start.is_none() {
-                            start = Some(now);
+            // pty -> stdout + records
+            if let Some(revents) = fds[1].revents() {
+                if revents.contains(PollFlags::POLLIN) {
+                    match read(master_fd_borrowed, &mut buf) {
+                        Ok(0) => running = false,
+                        Ok(n) => {
+                            let now = Instant::now();
+                            if start.is_none() {
+                                start = Some(now);
+                            }
+                            let elapsed = start
+                                .map(|s| now.duration_since(s).as_secs_f64())
+                                .unwrap_or(0.0);
+                            let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                            let _ = write(output_fd, &buf[..n]);
+                            records.push(AsciiCastV2Record::Event(
+                                AsciiCastV2Event::new(elapsed, "o", &text, None).expect("event"),
+                            ));
                         }
-                        let elapsed = start
-                            .map(|s| now.duration_since(s).as_secs_f64())
-                            .unwrap_or(0.0);
-                        let text = String::from_utf8_lossy(&buf[..n]).to_string();
-                        let _ = write(output_fileno, &buf[..n]);
-                        records.push(AsciiCastV2Record::Event(
-                            AsciiCastV2Event::new(elapsed, "o", &text, None).expect("event"),
-                        ));
-                    }
-                    Err(err) => {
-                        if err != nix::errno::Errno::EAGAIN {
-                            running = false;
+                        Err(err) => {
+                            if err != nix::errno::Errno::EAGAIN {
+                                running = false;
+                            }
                         }
                     }
                 }
@@ -218,7 +224,9 @@ pub fn record(
         }
     }
 
-    let _ = close(master_fd);
+    unsafe {
+        libc::close(master_fd);
+    }
     let _ = waitpid(child_pid, None);
     records
 }
@@ -875,9 +883,7 @@ pub fn timed_frames(
     let mut parser = Parser::new();
 
     let frames_iter = grouped_events.into_iter().map(move |event| {
-        for byte in event.event_data.as_bytes() {
-            parser.advance(&mut term, *byte);
-        }
+        parser.advance(&mut term, event.event_data.as_bytes());
         TimedFrame {
             time: (event.time * 1000.0) as u64,
             duration: (event.duration.unwrap_or(0.0) * 1000.0) as u64,

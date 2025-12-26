@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::os::fd::AsFd;
 use std::os::unix::io::AsRawFd;
 use std::process::Command;
 
@@ -31,7 +32,7 @@ fn record_and_render_flow() {
     let (reader, writer) = pipe().expect("pipe");
 
     // write some data then close the writer so the reader sees EOF
-    write(writer, b"echo test\n").unwrap();
+    write(writer.as_fd(), b"echo test\n").unwrap();
     close(writer).unwrap();
 
     let cast_dir = tempdir().unwrap();
@@ -39,7 +40,12 @@ fn record_and_render_flow() {
 
     let mut record_args = vec!["termtosvg".to_string(), "record".to_string()];
     record_args.push(cast_path.display().to_string());
-    cli::run(record_args, reader, std::io::stdout().as_raw_fd()).expect("record succeeds");
+    cli::run(
+        record_args,
+        reader.as_raw_fd(),
+        std::io::stdout().as_raw_fd(),
+    )
+    .expect("record succeeds");
 
     let render_dir = tempdir().unwrap();
     let render_path = render_dir.path().join("output.svg");
