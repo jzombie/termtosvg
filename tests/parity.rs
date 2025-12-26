@@ -7,6 +7,8 @@ use std::process::Command;
 use tempfile::tempdir;
 use xmltree::{Element, XMLNode};
 
+const PYTHON_NAMESPACE: &str = "https://github.com/nbedos/termtosvg";
+
 #[test]
 #[ignore = "requires Python reference renderer"]
 fn rust_svg_matches_python_reference() -> Result<(), Box<dyn Error>> {
@@ -52,6 +54,7 @@ fn rust_svg_matches_python_reference() -> Result<(), Box<dyn Error>> {
             "--template",
             &template_str,
         ])
+        .env("TERMTOSVG_NAMESPACE", PYTHON_NAMESPACE)
         .assert()
         .success();
 

@@ -1,6 +1,8 @@
 use std::io::Write;
 use std::os::unix::io::AsRawFd;
+use std::process::Command;
 
+use assert_cmd::prelude::*;
 use nix::unistd::{close, pipe, write};
 use tempfile::tempdir;
 
@@ -77,4 +79,28 @@ fn render_with_existing_cast() {
     )
     .unwrap();
     assert!(svg_path.exists());
+}
+
+#[test]
+fn render_honors_namespace_override() {
+    let cast = sample_cast_file();
+    let output_dir = tempdir().unwrap();
+    let svg_path = output_dir.path().join("override.svg");
+    let template = "old.python/termtosvg/data/templates/powershell.svg";
+    let namespace = "https://example.com/custom-termtosvg";
+
+    Command::new(assert_cmd::cargo::cargo_bin!("termtosvg"))
+        .env("TERMTOSVG_NAMESPACE", namespace)
+        .args([
+            "render",
+            cast.path().to_str().unwrap(),
+            svg_path.to_str().unwrap(),
+            "-t",
+            template,
+        ])
+        .assert()
+        .success();
+
+    let svg = std::fs::read_to_string(&svg_path).unwrap();
+    assert!(svg.contains(&format!("xmlns:termtosvg=\"{namespace}\"")));
 }

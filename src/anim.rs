@@ -14,9 +14,14 @@ use crate::term::TimedFrame;
 pub const CELL_WIDTH: u16 = 8;
 pub const CELL_HEIGHT: u16 = 17;
 const FRAME_CELL_SPACING: i32 = 1;
-const TERMTOSVG_NS: &str = "https://github.com/nbedos/termtosvg";
+const DEFAULT_TERMTOSVG_NS: &str = "https://github.com/jzombie/termtosvg-rs";
 
 type DefinitionMap = IndexMap<DefinitionKey, Element>;
+
+fn termtosvg_namespace() -> String {
+    std::env::var("TERMTOSVG_NAMESPACE")
+        .unwrap_or_else(|_| DEFAULT_TERMTOSVG_NS.to_string())
+}
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct DefinitionKey(Vec<TextRunKey>);
@@ -551,24 +556,13 @@ fn find_or_create_defs_index(root: &mut Element) -> usize {
 }
 
 fn ensure_template_settings(defs: &mut Element, columns: u16, rows: u16) -> Result<(u16, u16)> {
+    let namespace = termtosvg_namespace();
     let settings = ensure_child(defs, "template_settings", || {
-        let mut element = Element::new("termtosvg:template_settings");
-        element
-            .attributes
-            .insert("xmlns:termtosvg".into(), TERMTOSVG_NS.into());
-        element
+        Element::new("termtosvg:template_settings")
     });
-    let has_namespace_attr = settings.attributes.contains_key("xmlns:termtosvg");
-    let has_namespace_decl = settings
-        .namespaces
-        .as_ref()
-        .and_then(|ns| ns.get("termtosvg"))
-        .is_some();
-    if !has_namespace_attr && !has_namespace_decl {
-        settings
-            .attributes
-            .insert("xmlns:termtosvg".into(), TERMTOSVG_NS.into());
-    }
+    settings
+        .attributes
+        .insert("xmlns:termtosvg".into(), namespace.clone());
 
     let _animation = ensure_child(settings, "animation", || {
         let mut element = Element::new("termtosvg:animation");
