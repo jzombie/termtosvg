@@ -38,6 +38,21 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python reference renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install ./old.python
+          echo "TERMTOSVG_REFERENCE_BIN=$PWD/.venv/bin/termtosvg" >> "$GITHUB_ENV"
+
       - name: Capture rustc commit hash
         id: rustc
         shell: bash
