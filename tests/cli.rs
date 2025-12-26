@@ -31,6 +31,12 @@ fn integral_duration_validation_accepts_ms_suffix() {
 fn record_and_render_flow() {
     let (reader, writer) = pipe().expect("pipe");
 
+    // Ensure tests don't hang if the child process waits for stdout to be a tty
+    let null_output = std::fs::File::options()
+        .write(true)
+        .open("/dev/null")
+        .expect("open /dev/null");
+
     // write some data then close the writer so the reader sees EOF
     write(writer.as_fd(), b"echo test\n").unwrap();
     close(writer).unwrap();
@@ -43,7 +49,7 @@ fn record_and_render_flow() {
     cli::run(
         record_args,
         reader.as_raw_fd(),
-        std::io::stdout().as_raw_fd(),
+        null_output.as_raw_fd(),
     )
     .expect("record succeeds");
 
@@ -59,7 +65,7 @@ fn record_and_render_flow() {
     cli::run(
         render_args,
         std::io::stdin().as_raw_fd(),
-        std::io::stdout().as_raw_fd(),
+        null_output.as_raw_fd(),
     )
     .expect("render succeeds");
 
