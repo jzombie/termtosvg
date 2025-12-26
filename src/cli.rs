@@ -4,7 +4,7 @@ use std::os::unix::io::RawFd;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use rand::{distr::Alphanumeric, Rng};
+use rand::{Rng, distr::Alphanumeric};
 use tempfile::NamedTempFile;
 
 use crate::anim;
@@ -141,7 +141,7 @@ pub fn run(args: Vec<String>, input_fileno: RawFd, output_fileno: RawFd) -> Resu
                 .output_path
                 .clone()
                 .or_else(|| record_args.output_path_pos.clone())
-                .unwrap_or_else(|| temp_cast_file());
+                .unwrap_or_else(temp_cast_file);
             let process_args = parse_process_args(&record_args.command_to_record);
             let geometry =
                 geometry_or_default(record_args.screen_geometry.as_deref(), output_fileno)?;
@@ -269,6 +269,7 @@ fn render_subcommand(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record_render_subcommand(
     process_args: Vec<String>,
     still: bool,

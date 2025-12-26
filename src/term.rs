@@ -84,10 +84,11 @@ impl Drop for TerminalMode {
 pub fn get_terminal_size(fileno: RawFd) -> (u16, u16) {
     unsafe {
         let mut size: libc::winsize = std::mem::zeroed();
-        if libc::ioctl(fileno, libc::TIOCGWINSZ, &mut size) == 0 {
-            if size.ws_col > 0 && size.ws_row > 0 {
-                return (size.ws_col, size.ws_row);
-            }
+        if libc::ioctl(fileno, libc::TIOCGWINSZ, &mut size) == 0
+            && size.ws_col > 0
+            && size.ws_row > 0
+        {
+            return (size.ws_col, size.ws_row);
         }
     }
     (80, 24)
@@ -178,45 +179,45 @@ pub fn record(
             let _ = poll(&mut fds, 100u16);
 
             // stdin -> pty
-            if let Some(revents) = fds[0].revents() {
-                if revents.contains(PollFlags::POLLIN) {
-                    match read(input_fd, &mut buf) {
-                        Ok(0) => running = false,
-                        Ok(n) => {
-                            let _ = write(master_fd_borrowed, &buf[..n]);
-                        }
-                        Err(err) => {
-                            if err != nix::errno::Errno::EAGAIN {
-                                running = false;
-                            }
+            if let Some(revents) = fds[0].revents()
+                && revents.contains(PollFlags::POLLIN)
+            {
+                match read(input_fd, &mut buf) {
+                    Ok(0) => running = false,
+                    Ok(n) => {
+                        let _ = write(master_fd_borrowed, &buf[..n]);
+                    }
+                    Err(err) => {
+                        if err != nix::errno::Errno::EAGAIN {
+                            running = false;
                         }
                     }
                 }
             }
 
             // pty -> stdout + records
-            if let Some(revents) = fds[1].revents() {
-                if revents.contains(PollFlags::POLLIN) {
-                    match read(master_fd_borrowed, &mut buf) {
-                        Ok(0) => running = false,
-                        Ok(n) => {
-                            let now = Instant::now();
-                            if start.is_none() {
-                                start = Some(now);
-                            }
-                            let elapsed = start
-                                .map(|s| now.duration_since(s).as_secs_f64())
-                                .unwrap_or(0.0);
-                            let text = String::from_utf8_lossy(&buf[..n]).to_string();
-                            let _ = write(output_fd, &buf[..n]);
-                            records.push(AsciiCastV2Record::Event(
-                                AsciiCastV2Event::new(elapsed, "o", &text, None).expect("event"),
-                            ));
+            if let Some(revents) = fds[1].revents()
+                && revents.contains(PollFlags::POLLIN)
+            {
+                match read(master_fd_borrowed, &mut buf) {
+                    Ok(0) => running = false,
+                    Ok(n) => {
+                        let now = Instant::now();
+                        if start.is_none() {
+                            start = Some(now);
                         }
-                        Err(err) => {
-                            if err != nix::errno::Errno::EAGAIN {
-                                running = false;
-                            }
+                        let elapsed = start
+                            .map(|s| now.duration_since(s).as_secs_f64())
+                            .unwrap_or(0.0);
+                        let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let _ = write(output_fd, &buf[..n]);
+                        records.push(AsciiCastV2Record::Event(
+                            AsciiCastV2Event::new(elapsed, "o", &text, None).expect("event"),
+                        ));
+                    }
+                    Err(err) => {
+                        if err != nix::errno::Errno::EAGAIN {
+                            running = false;
                         }
                     }
                 }
@@ -250,11 +251,11 @@ pub fn _group_by_time(
         let time_between_events = event_record.time - (current_time + dropped_time);
         if time_between_events * 1000.0 >= min_rec_duration as f64 {
             let mut duration = time_between_events;
-            if let Some(max_rec) = max_rec_duration {
-                if duration > max_rec {
-                    dropped_time += duration - max_rec;
-                    duration = max_rec;
-                }
+            if let Some(max_rec) = max_rec_duration
+                && duration > max_rec
+            {
+                dropped_time += duration - max_rec;
+                duration = max_rec;
             }
             grouped.push(
                 AsciiCastV2Event::new(current_time, "o", &current_string, Some(duration))
@@ -417,7 +418,7 @@ impl CellAttributes {
                         match *mode {
                             5 => {
                                 if let Some(idx) = params.get(i + 2) {
-                                    let idx_val = *idx as i64;
+                                    let idx_val = *idx;
                                     if idx_val < 16 {
                                         let palette_idx = (idx_val as u8) % 8;
                                         let bright = idx_val >= 8;
@@ -445,7 +446,7 @@ impl CellAttributes {
                         match *mode {
                             5 => {
                                 if let Some(idx) = params.get(i + 2) {
-                                    let idx_val = *idx as i64;
+                                    let idx_val = *idx;
                                     if idx_val < 16 {
                                         let palette_idx = (idx_val as u8) % 8;
                                         let bright = idx_val >= 8;
@@ -484,7 +485,7 @@ impl CellAttributes {
 }
 
 fn ansi_color_class(idx: u8, bright: bool) -> String {
-    let base = idx.min(7) as u8;
+    let base = idx.min(7);
     let color_idx = if bright { base + 8 } else { base };
     format!("color{}", color_idx)
 }
@@ -503,7 +504,7 @@ fn color_from_256(idx: i64) -> String {
         }
         232..=255 => {
             let level = 8 + 10 * (idx - 232);
-            let v = level as u8;
+            let v = level;
             format!("#{:02x}{:02x}{:02x}", v, v, v)
         }
     }
@@ -841,12 +842,9 @@ impl Perform for TerminalEmulator {
     }
 
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
-        match byte {
-            b'c' => {
-                self.clear_screen();
-                self.attr.reset();
-            }
-            _ => {}
+        if byte == b'c' {
+            self.clear_screen();
+            self.attr.reset();
         }
     }
 }

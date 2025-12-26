@@ -24,8 +24,7 @@ const DEFAULT_TERMTOSVG_NS: &str = {
 type DefinitionMap = IndexMap<DefinitionKey, Element>;
 
 fn termtosvg_namespace() -> String {
-    std::env::var("TERMTOSVG_NAMESPACE")
-        .unwrap_or_else(|_| DEFAULT_TERMTOSVG_NS.to_string())
+    std::env::var("TERMTOSVG_NAMESPACE").unwrap_or_else(|_| DEFAULT_TERMTOSVG_NS.to_string())
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -669,10 +668,10 @@ fn find_screen_mut(element: &mut Element) -> Option<&mut Element> {
         return Some(element);
     }
     for child in element.children.iter_mut() {
-        if let XMLNode::Element(elem) = child {
-            if let Some(found) = find_screen_mut(elem) {
-                return Some(found);
-            }
+        if let XMLNode::Element(elem) = child
+            && let Some(found) = find_screen_mut(elem)
+        {
+            return Some(found);
         }
     }
     None
@@ -749,12 +748,11 @@ fn find_style_mut(root: &mut Element) -> Option<&mut Element> {
             }
             if elem.name == "defs" {
                 for child in elem.children.iter_mut() {
-                    if let XMLNode::Element(e) = child {
-                        if e.name == "style"
-                            && e.attributes.get("id") == Some(&"generated-style".to_string())
-                        {
-                            return Some(e);
-                        }
+                    if let XMLNode::Element(e) = child
+                        && e.name == "style"
+                        && e.attributes.get("id") == Some(&"generated-style".to_string())
+                    {
+                        return Some(e);
                     }
                 }
             }
