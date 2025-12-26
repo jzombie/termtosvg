@@ -1,10 +1,8 @@
 use std::io::Write;
-use std::os::fd::AsFd;
 use std::os::unix::io::AsRawFd;
 use std::process::Command;
 
 use assert_cmd::prelude::*;
-use nix::unistd::{close, pipe, write};
 use tempfile::tempdir;
 
 use termtosvg::cli;
@@ -29,29 +27,25 @@ fn integral_duration_validation_accepts_ms_suffix() {
 
 #[test]
 fn record_and_render_flow() {
-    let (reader, writer) = pipe().expect("pipe");
-
-    // Ensure tests don't hang if the child process waits for stdout to be a tty
+    let null_input = std::fs::File::open("/dev/null").expect("open /dev/null for reading");
     let null_output = std::fs::File::options()
         .write(true)
         .open("/dev/null")
-        .expect("open /dev/null");
-
-    // write some data then close the writer so the reader sees EOF
-    write(writer.as_fd(), b"echo test\n").unwrap();
-    close(writer).unwrap();
+        .expect("open /dev/null for writing");
 
     let cast_dir = tempdir().unwrap();
     let cast_path = cast_dir.path().join("session.cast");
 
-    let mut record_args = vec!["termtosvg".to_string(), "record".to_string()];
+    let command = "/bin/sh -c 'printf record_flow'".to_string();
+    let mut record_args = vec![
+        "termtosvg".to_string(),
+        "record".to_string(),
+        "-c".to_string(),
+        command,
+    ];
     record_args.push(cast_path.display().to_string());
-    cli::run(
-        record_args,
-        reader.as_raw_fd(),
-        null_output.as_raw_fd(),
-    )
-    .expect("record succeeds");
+    cli::run(record_args, null_input.as_raw_fd(), null_output.as_raw_fd())
+        .expect("record succeeds");
 
     let render_dir = tempdir().unwrap();
     let render_path = render_dir.path().join("output.svg");
@@ -62,12 +56,8 @@ fn record_and_render_flow() {
         cast_path.display().to_string(),
         render_path.display().to_string(),
     ];
-    cli::run(
-        render_args,
-        std::io::stdin().as_raw_fd(),
-        null_output.as_raw_fd(),
-    )
-    .expect("render succeeds");
+    cli::run(render_args, null_input.as_raw_fd(), null_output.as_raw_fd())
+        .expect("render succeeds");
 
     assert!(render_path.exists());
 }
