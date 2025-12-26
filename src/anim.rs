@@ -567,9 +567,7 @@ fn ensure_template_settings(defs: &mut Element, columns: u16, rows: u16) -> Resu
         Element::new("termtosvg:template_settings")
     });
     if !namespace.is_empty() {
-        settings
-            .attributes
-            .insert("xmlns:termtosvg".into(), namespace.clone());
+        apply_namespace(settings, namespace.as_str());
     }
 
     let _animation = ensure_child(settings, "animation", || {
@@ -633,6 +631,22 @@ fn ensure_child<'a>(
     match parent.children.last_mut() {
         Some(XMLNode::Element(elem)) => elem,
         _ => unreachable!("Newly inserted child must be an element"),
+    }
+}
+
+fn apply_namespace(element: &mut Element, namespace: &str) {
+    if let Some(ns_map) = element.namespaces.take() {
+        let mut ns_map = ns_map;
+        ns_map.force_put("termtosvg", namespace);
+        element.namespaces = Some(ns_map);
+    }
+    if let Some(attr) = element.attributes.get_mut("xmlns:termtosvg") {
+        *attr = namespace.to_string();
+    }
+    for child in element.children.iter_mut() {
+        if let XMLNode::Element(elem) = child {
+            apply_namespace(elem, namespace);
+        }
     }
 }
 
