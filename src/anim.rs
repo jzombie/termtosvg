@@ -56,6 +56,7 @@ impl CharacterCell {
 }
 
 #[derive(Clone, Copy)]
+#[derive(PartialEq, Eq)]
 pub struct ConsecutiveKey<'a> {
     pub color: &'a str,
     pub bold: bool,
@@ -259,32 +260,40 @@ fn render_line(
 
 pub fn render_line_bg_colors(row: &BTreeMap<usize, CharacterCell>, height: usize, cell_height: u16, cell_width: u16) -> Vec<Element> {
     let mut rects = Vec::new();
-    let mut last_color: Option<&str> = None;
-    let mut start_col: Option<usize> = None;
-    let mut length = 0_usize;
+    let iter: Vec<(usize, &CharacterCell)> = row
+        .iter()
+        .filter(|(_, c)| c.background_color != "background")
+        .map(|(col, cell)| (*col, cell))
+        .collect();
+    if iter.is_empty() {
+        return rects;
+    }
 
-    for (col, cell) in row.iter().filter(|(_, c)| c.background_color != "background") {
-        match last_color {
-            Some(color) if color == cell.background_color => {
-                if let Some(s) = start_col {
-                    length = (col - s) + cell.text.width();
-                }
-            }
-            _ => {
-                if let (Some(s), Some(color)) = (start_col, last_color) {
-                    rects.push(make_rect_tag(s, length, height, cell_width, cell_height, color));
-                }
-                start_col = Some(*col);
-                length = cell.text.width();
-                last_color = Some(&cell.background_color);
-            }
+    let mut start_col = iter[0].0;
+    let mut current_color = iter[0].1.background_color.as_str();
+    let mut accumulated_width = UnicodeWidthStr::width(iter[0].1.text.as_str());
+    let mut last_col = iter[0].0;
+
+    let flush = |start: usize, width: usize, color: &str, rects: &mut Vec<Element>| {
+        if width > 0 {
+            rects.push(make_rect_tag(start, width, height, cell_width, cell_height, color));
         }
+    };
+
+    for (col, cell) in iter.into_iter().skip(1) {
+        let contiguous = col == last_col + 1;
+        if contiguous && cell.background_color == current_color {
+            accumulated_width += UnicodeWidthStr::width(cell.text.as_str());
+        } else {
+            flush(start_col, accumulated_width, current_color, &mut rects);
+            start_col = col;
+            current_color = cell.background_color.as_str();
+            accumulated_width = UnicodeWidthStr::width(cell.text.as_str());
+        }
+        last_col = col;
     }
 
-    if let (Some(s), Some(color)) = (start_col, last_color) {
-        rects.push(make_rect_tag(s, length, height, cell_width, cell_height, color));
-    }
-
+    flush(start_col, accumulated_width, current_color, &mut rects);
     rects
 }
 
@@ -297,9 +306,10 @@ pub fn render_characters(row: &BTreeMap<usize, CharacterCell>, cell_width: u16) 
     let mut sorted: Vec<(usize, &CharacterCell)> = row.iter().map(|(c, cell)| (*c, cell)).collect();
     sorted.sort_by_key(|(c, _)| *c);
 
-    let mut current_attr: Option<ConsecutiveKey> = None;
+    let mut current_key: Option<ConsecutiveKey<'_>> = None;
     let mut current_text = String::new();
     let mut current_col = 0_usize;
+    let mut last_col: Option<usize> = None;
 
     for (col, cell) in sorted.into_iter() {
         let key = ConsecutiveKey {
@@ -309,29 +319,27 @@ pub fn render_characters(row: &BTreeMap<usize, CharacterCell>, cell_width: u16) 
             underscore: cell.underscore,
             strikethrough: cell.strikethrough,
         };
-        if let Some(attr) = current_attr {
-            if attr.color == key.color
-                && attr.bold == key.bold
-                && attr.italics == key.italics
-                && attr.underscore == key.underscore
-                && attr.strikethrough == key.strikethrough
-                && col == current_col + UnicodeWidthStr::width(current_text.as_str())
-            {
-                current_text.push_str(&cell.text);
-                current_attr = Some(attr);
-                continue;
-            } else {
-                let elem = make_text_tag(current_col, &cell_from_key(attr, &current_text), &current_text, cell_width);
+        let contiguous = last_col.map(|lc| col == lc + 1).unwrap_or(true);
+        let same_group = contiguous && current_key.map(|ck| ck == key).unwrap_or(false);
+
+        if same_group {
+            current_text.push_str(&cell.text);
+        } else {
+            if let Some(prev_key) = current_key {
+                let grouped_cell = cell_from_key(prev_key, &current_text);
+                let elem = make_text_tag(current_col, &grouped_cell, &current_text, cell_width);
                 text_group.children.push(XMLNode::Element(elem));
             }
+            current_key = Some(key);
+            current_col = col;
+            current_text = cell.text.clone();
         }
-        current_attr = Some(key);
-        current_text = cell.text.clone();
-        current_col = col;
+        last_col = Some(col);
     }
 
-    if let Some(attr) = current_attr {
-        let elem = make_text_tag(current_col, &cell_from_key(attr, &current_text), &current_text, cell_width);
+    if let Some(prev_key) = current_key {
+        let grouped_cell = cell_from_key(prev_key, &current_text);
+        let elem = make_text_tag(current_col, &grouped_cell, &current_text, cell_width);
         text_group.children.push(XMLNode::Element(elem));
     }
 
@@ -508,7 +516,7 @@ pub fn embed_css(root: &mut Element, timings: Option<&BTreeMap<u64, i32>>, anima
         return Err(anyhow!("Missing <style id=\"generated-style\"> element"));
     };
 
-    let base_css = "#screen {\n                font-family: 'Menlo', 'Monaco', 'Consolas', 'DejaVu Sans Mono', 'Liberation Mono', monospace;\n                font-style: normal;\n                font-size: 13px;\n                line-height: 17px;\n            }\n\n        text {\n            dominant-baseline: text-before-edge;\n            white-space: pre;\n        }\n    ";
+    let base_css = "#screen {\n                font-family: 'DejaVu Sans Mono', monospace;\n                font-style: normal;\n                font-size: 14px;\n                line-height: 17px;\n            }\n\n        text {\n            dominant-baseline: text-before-edge;\n            white-space: pre;\n        }\n    ";
 
     let final_css = if let (Some(timings), Some(duration)) = (timings, animation_duration) {
         if duration == 0 {

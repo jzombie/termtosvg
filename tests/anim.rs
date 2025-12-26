@@ -27,7 +27,7 @@ fn render_characters_groups_text_with_same_style() {
     line.insert(5, cell("C", "blue", "background"));
 
     let group = anim::render_characters(&line, anim::CELL_WIDTH);
-    // expect two text nodes
+    // expect consecutive cells with same style to merge into one text node
     let count = group
         .children
         .iter()

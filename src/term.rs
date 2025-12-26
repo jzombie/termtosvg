@@ -258,6 +258,11 @@ pub fn _group_by_time(
 struct CellAttributes {
     fg: String,
     bg: String,
+    fg_palette: Option<u8>,
+    fg_is_bright: bool,
+    fg_bright_from_bold: bool,
+    bg_palette: Option<u8>,
+    bg_is_bright: bool,
     bold: bool,
     italics: bool,
     underline: bool,
@@ -270,6 +275,11 @@ impl CellAttributes {
         CellAttributes {
             fg: "foreground".into(),
             bg: "background".into(),
+            fg_palette: None,
+            fg_is_bright: false,
+            fg_bright_from_bold: false,
+            bg_palette: None,
+            bg_is_bright: false,
             bold: false,
             italics: false,
             underline: false,
@@ -282,32 +292,157 @@ impl CellAttributes {
         *self = CellAttributes::default();
     }
 
+    fn set_fg_palette(&mut self, idx: u8, bright: bool) {
+        let base = idx.min(7);
+        self.fg_palette = Some(base);
+        self.fg_is_bright = bright;
+        self.fg_bright_from_bold = false;
+        self.update_fg_class();
+        self.apply_bold_intensity();
+    }
+
+    fn set_bg_palette(&mut self, idx: u8, bright: bool) {
+        let base = idx.min(7);
+        self.bg_palette = Some(base);
+        self.bg_is_bright = bright;
+        let class_idx = base + if bright { 8 } else { 0 };
+        self.bg = format!("color{}", class_idx);
+    }
+
+    fn set_fg_default(&mut self) {
+        self.fg_palette = None;
+        self.fg_is_bright = false;
+        self.fg_bright_from_bold = false;
+        self.fg = "foreground".into();
+    }
+
+    fn set_bg_default(&mut self) {
+        self.bg_palette = None;
+        self.bg_is_bright = false;
+        self.bg = "background".into();
+    }
+
+    fn set_fg_custom<S: Into<String>>(&mut self, css: S) {
+        self.fg_palette = None;
+        self.fg_is_bright = false;
+        self.fg_bright_from_bold = false;
+        self.fg = css.into();
+    }
+
+    fn set_bg_custom<S: Into<String>>(&mut self, css: S) {
+        self.bg_palette = None;
+        self.bg_is_bright = false;
+        self.bg = css.into();
+    }
+
+    fn update_fg_class(&mut self) {
+        if let Some(idx) = self.fg_palette {
+            let class_idx = idx + if self.fg_is_bright { 8 } else { 0 };
+            self.fg = format!("color{}", class_idx);
+        }
+    }
+
+    fn apply_bold_intensity(&mut self) {
+        if let Some(_idx) = self.fg_palette {
+            if self.bold && !self.fg_is_bright {
+                self.fg_is_bright = true;
+                self.fg_bright_from_bold = true;
+                self.update_fg_class();
+            } else if !self.bold && self.fg_bright_from_bold {
+                self.fg_is_bright = false;
+                self.fg_bright_from_bold = false;
+                self.update_fg_class();
+            }
+        }
+    }
+
     fn set_sgr(&mut self, params: &[i64]) {
         if params.is_empty() {
             self.reset();
             return;
         }
-        for &p in params {
-            match p {
+
+        let mut i = 0;
+        while i < params.len() {
+            match params[i] {
                 0 => self.reset(),
-                1 => self.bold = true,
+                1 => {
+                    self.bold = true;
+                    self.apply_bold_intensity();
+                }
                 3 => self.italics = true,
                 4 => self.underline = true,
                 7 => self.inverse = true,
                 9 => self.strikethrough = true,
-                22 => self.bold = false,
+                22 => {
+                    self.bold = false;
+                    self.apply_bold_intensity();
+                }
                 23 => self.italics = false,
                 24 => self.underline = false,
                 27 => self.inverse = false,
                 29 => self.strikethrough = false,
-                30..=37 => self.fg = ansi_color((p - 30) as u8, false),
-                90..=97 => self.fg = ansi_color((p - 90) as u8, true),
-                39 => self.fg = "foreground".into(),
-                40..=47 => self.bg = ansi_color((p - 40) as u8, false),
-                100..=107 => self.bg = ansi_color((p - 100) as u8, true),
-                49 => self.bg = "background".into(),
+                30..=37 => self.set_fg_palette((params[i] - 30) as u8, false),
+                90..=97 => self.set_fg_palette((params[i] - 90) as u8, true),
+                39 => self.set_fg_default(),
+                40..=47 => self.set_bg_palette((params[i] - 40) as u8, false),
+                100..=107 => self.set_bg_palette((params[i] - 100) as u8, true),
+                49 => self.set_bg_default(),
+                38 => {
+                    if let Some(mode) = params.get(i + 1) {
+                        match *mode {
+                            5 => {
+                                if let Some(idx) = params.get(i + 2) {
+                                    let idx_val = *idx as i64;
+                                    if idx_val < 16 {
+                                        let palette_idx = (idx_val as u8) % 8;
+                                        let bright = idx_val >= 8;
+                                        self.set_fg_palette(palette_idx, bright);
+                                    } else {
+                                        self.set_fg_custom(color_from_256(idx_val));
+                                    }
+                                    i += 2;
+                                }
+                            }
+                            2 => {
+                                if let (Some(r), Some(g), Some(b)) = (params.get(i + 2), params.get(i + 3), params.get(i + 4)) {
+                                    self.set_fg_custom(rgb_color(*r, *g, *b));
+                                    i += 4;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                48 => {
+                    if let Some(mode) = params.get(i + 1) {
+                        match *mode {
+                            5 => {
+                                if let Some(idx) = params.get(i + 2) {
+                                    let idx_val = *idx as i64;
+                                    if idx_val < 16 {
+                                        let palette_idx = (idx_val as u8) % 8;
+                                        let bright = idx_val >= 8;
+                                        self.set_bg_palette(palette_idx, bright);
+                                    } else {
+                                        self.set_bg_custom(color_from_256(idx_val));
+                                    }
+                                    i += 2;
+                                }
+                            }
+                            2 => {
+                                if let (Some(r), Some(g), Some(b)) = (params.get(i + 2), params.get(i + 3), params.get(i + 4)) {
+                                    self.set_bg_custom(rgb_color(*r, *g, *b));
+                                    i += 4;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 _ => {}
             }
+            i += 1;
         }
     }
 
@@ -320,29 +455,35 @@ impl CellAttributes {
     }
 }
 
-fn ansi_color(idx: u8, bright: bool) -> String {
-    // Basic ANSI palette
-    const BASE: [(u8, u8, u8); 8] = [
-        (0x00, 0x00, 0x00), // black
-        (0xcd, 0x00, 0x00), // red
-        (0x00, 0xcd, 0x00), // green
-        (0xcd, 0xcd, 0x00), // yellow
-        (0x00, 0x00, 0xee), // blue
-        (0xcd, 0x00, 0xcd), // magenta
-        (0x00, 0xcd, 0xcd), // cyan
-        (0xe5, 0xe5, 0xe5), // white
-    ];
-    let (r, g, b) = BASE[(idx as usize).min(7)];
-    let (r, g, b) = if bright {
-        (
-            (r as u16 + 0x33).min(0xff) as u8,
-            (g as u16 + 0x33).min(0xff) as u8,
-            (b as u16 + 0x33).min(0xff) as u8,
-        )
-    } else {
-        (r, g, b)
-    };
-    format!("#{:02x}{:02x}{:02x}", r, g, b)
+fn ansi_color_class(idx: u8, bright: bool) -> String {
+    let base = idx.min(7) as u8;
+    let color_idx = if bright { base + 8 } else { base };
+    format!("color{}", color_idx)
+}
+
+fn color_from_256(idx: i64) -> String {
+    let idx = idx.clamp(0, 255) as u8;
+    match idx {
+        0..=15 => ansi_color_class(idx.min(7), idx >= 8),
+        16..=231 => {
+            let c = idx - 16;
+            let r = c / 36;
+            let g = (c / 6) % 6;
+            let b = c % 6;
+            let comp = |v: u8| if v == 0 { 0 } else { 55 + 40 * v };
+            format!("#{:02x}{:02x}{:02x}", comp(r), comp(g), comp(b))
+        }
+        232..=255 => {
+            let level = 8 + 10 * (idx - 232);
+            let v = level as u8;
+            format!("#{:02x}{:02x}{:02x}", v, v, v)
+        }
+    }
+}
+
+fn rgb_color(r: i64, g: i64, b: i64) -> String {
+    let clamp = |v: i64| -> u8 { v.clamp(0, 255) as u8 };
+    format!("#{:02x}{:02x}{:02x}", clamp(r), clamp(g), clamp(b))
 }
 
 struct TerminalEmulator {
