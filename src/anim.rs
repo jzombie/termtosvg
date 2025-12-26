@@ -193,6 +193,7 @@ pub fn render_animation<I: IntoIterator<Item = TimedFrame>, P: AsRef<Path>>(
     template: &[u8],
 ) -> Result<()> {
     let mut root = render_preparation(geometry, template)?;
+    ensure_css_animation(&root)?;
     let screen_height = geometry.1;
     let mut screen_view = Element::new("g");
     screen_view
@@ -247,6 +248,7 @@ pub fn render_still_frames<I: IntoIterator<Item = TimedFrame>, P: AsRef<Path>>(
 ) -> Result<()> {
     std::fs::create_dir_all(directory.as_ref())?;
     let root = render_preparation(geometry, template)?;
+    ensure_css_animation(&root)?;
     let empty_defs = DefinitionMap::new();
     for (idx, frame) in frames.into_iter().enumerate() {
         let mut frame_root = root.clone();
@@ -634,6 +636,35 @@ fn ensure_child<'a>(
     }
 }
 
+fn find_child_element<'a>(parent: &'a Element, name: &str) -> Option<&'a Element> {
+    parent.children.iter().find_map(|child| match child {
+        XMLNode::Element(elem) if node_name_eq(elem, name) => Some(elem),
+        _ => None,
+    })
+}
+
+fn ensure_css_animation(root: &Element) -> Result<()> {
+    let defs = find_child_element(root, "defs")
+        .ok_or_else(|| anyhow!("Unable to locate <defs> element in template"))?;
+    let settings = find_child_element(defs, "template_settings")
+        .ok_or_else(|| anyhow!("Missing \"template_settings\" element in definitions"))?;
+    let animation = find_child_element(settings, "animation")
+        .ok_or_else(|| anyhow!("Missing \"animation\" element in \"template_settings\""))?;
+    let animation_type = animation
+        .attributes
+        .get("type")
+        .ok_or_else(|| anyhow!("Missing \"type\" attribute for animation element"))?
+        .to_lowercase();
+
+    if animation_type == "css" {
+        return Ok(());
+    }
+
+    Err(anyhow!(
+        "Template requests unsupported animation type '{animation_type}'. Only CSS-based templates are supported (GitHub-safe).",
+    ))
+}
+
 fn ensure_style(defs: &mut Element) {
     if defs.children.iter().any(|child| matches!(child, XMLNode::Element(elem) if elem.name == "style" && elem.attributes.get("id") == Some(&"generated-style".to_string()))) {
         return;
@@ -742,7 +773,7 @@ fn find_style_mut(root: &mut Element) -> Option<&mut Element> {
     for node in root.children.iter_mut() {
         if let XMLNode::Element(elem) = node {
             if elem.name == "style"
-                && elem.attributes.get("id") == Some(&"generated-style".to_string())
+                && matches!(elem.attributes.get("id"), Some(value) if value == "generated-style")
             {
                 return Some(elem);
             }
@@ -750,7 +781,7 @@ fn find_style_mut(root: &mut Element) -> Option<&mut Element> {
                 for child in elem.children.iter_mut() {
                     if let XMLNode::Element(e) = child
                         && e.name == "style"
-                        && e.attributes.get("id") == Some(&"generated-style".to_string())
+                        && matches!(e.attributes.get("id"), Some(value) if value == "generated-style")
                     {
                         return Some(e);
                     }
@@ -814,14 +845,6 @@ pub fn embed_css(
     Ok(())
 }
 
-pub fn embed_waapi(
-    root: &mut Element,
-    timings: Option<&BTreeMap<u64, i32>>,
-    animation_duration: Option<u64>,
-) -> Result<()> {
-    embed_css(root, timings, animation_duration)
-}
-
 pub fn validate_svg<T: AsRef<[u8]>>(svg_data: T) -> Result<()> {
     validate_svg_bytes(svg_data.as_ref())
 }
@@ -830,3 +853,4 @@ fn validate_svg_bytes(bytes: &[u8]) -> Result<()> {
     Element::parse(bytes).map(|_| ())?;
     Ok(())
 }
+

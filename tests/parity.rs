@@ -5,13 +5,19 @@ use std::io::Cursor;
 use std::path::Path;
 use std::process::Command;
 use tempfile::tempdir;
+use termtosvg::config::DEFAULT_TEMPLATES_NAMES;
 use xmltree::{Element, XMLNode};
 
 const PYTHON_NAMESPACE: &str = "https://github.com/nbedos/termtosvg";
+const TEMPLATE_ROOT: &str = "old.python/termtosvg/data/templates";
 
 #[test]
 #[ignore = "requires Python reference renderer"]
-fn rust_svg_matches_python_reference() -> Result<(), Box<dyn Error>> {
+fn rust_svg_matches_python_reference_default_templates() -> Result<(), Box<dyn Error>> {
+    compare_against_python(DEFAULT_TEMPLATES_NAMES)
+}
+
+fn compare_against_python(templates: &[&str]) -> Result<(), Box<dyn Error>> {
     let reference_bin = std::env::var("TERMTOSVG_REFERENCE_BIN")
         .unwrap_or_else(|_| ".venv/bin/termtosvg".to_string());
     let reference_path = Path::new(&reference_bin);
@@ -22,49 +28,88 @@ fn rust_svg_matches_python_reference() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    let template_path = Path::new("old.python/termtosvg/data/templates/powershell.svg");
-    assert!(
-        template_path.exists(),
-        "Missing template at {}",
-        template_path.display()
-    );
-
-    let temp = tempdir()?;
-    let cast_path = temp.path().join("parity.cast");
+    let template_root = Path::new(TEMPLATE_ROOT);
+    let temp_dir = tempdir()?;
+    let cast_path = temp_dir.path().join("parity.cast");
     std::fs::write(&cast_path, include_str!("../samples.cast"))?;
-    let python_svg = temp.path().join("python.svg");
-    let rust_svg = temp.path().join("rust.svg");
-
     let cast_str = cast_path.to_string_lossy().to_string();
-    let python_svg_str = python_svg.to_string_lossy().to_string();
-    let rust_svg_str = rust_svg.to_string_lossy().to_string();
+
+    for template_name in templates {
+        let template_path = template_root.join(template_name);
+        assert!(
+            template_path.exists(),
+            "Missing template at {}",
+            template_path.display()
+        );
+
+        let slug = template_name.trim_end_matches(".svg");
+        let python_svg = temp_dir.path().join(format!("python-{slug}.svg"));
+        let rust_svg = temp_dir.path().join(format!("rust-{slug}.svg"));
+        render_with_python(
+            reference_path,
+            &cast_str,
+            &python_svg,
+            &template_path,
+            template_name,
+        )?;
+        render_with_rust(&cast_str, &rust_svg, &template_path)?;
+        compare_outputs(&python_svg, &rust_svg, template_name)?;
+    }
+    Ok(())
+}
+
+fn render_with_python(
+    reference_path: &Path,
+    cast_file: &str,
+    output_svg: &Path,
+    template_path: &Path,
+    template_name: &str,
+) -> Result<(), Box<dyn Error>> {
+    let output_str = output_svg.to_string_lossy().to_string();
     let template_str = template_path.to_string_lossy().to_string();
-
     let status = Command::new(reference_path)
-        .args(["render", &cast_str, &python_svg_str, "-t", &template_str])
+        .args(["render", cast_file, &output_str, "-t", &template_str])
         .status()?;
-    assert!(status.success(), "Python reference renderer failed");
+    if !status.success() {
+        return Err(format!("Python renderer failed for template {template_name}").into());
+    }
+    Ok(())
+}
 
+fn render_with_rust(
+    cast_file: &str,
+    output_svg: &Path,
+    template_path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let output_str = output_svg.to_string_lossy().to_string();
+    let template_str = template_path.to_string_lossy().to_string();
     Command::new(assert_cmd::cargo::cargo_bin!("termtosvg"))
         .args([
             "render",
-            &cast_str,
+            cast_file,
             "--output",
-            &rust_svg_str,
+            &output_str,
             "--template",
             &template_str,
         ])
         .env("TERMTOSVG_NAMESPACE", PYTHON_NAMESPACE)
         .assert()
         .success();
+    Ok(())
+}
 
-    let python_bytes = std::fs::read(&python_svg)?;
-    let rust_bytes = std::fs::read(&rust_svg)?;
+fn compare_outputs(
+    python_svg: &Path,
+    rust_svg: &Path,
+    template_name: &str,
+) -> Result<(), Box<dyn Error>> {
+    let python_bytes = std::fs::read(python_svg)?;
+    let rust_bytes = std::fs::read(rust_svg)?;
     let python_dom = canonicalize_svg(&python_bytes)?;
     let rust_dom = canonicalize_svg(&rust_bytes)?;
     assert_eq!(
         rust_dom, python_dom,
-        "SVG DOM differs from Python reference"
+        "SVG DOM differs from Python reference for template {template_name}"
     );
     Ok(())
 }
