@@ -2,8 +2,10 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
+use std::str;
 
 use anyhow::{Result, anyhow};
+use roxmltree::Document;
 use indexmap::IndexMap;
 use once_cell::sync::Lazy;
 use unicode_width::UnicodeWidthStr;
@@ -236,7 +238,6 @@ pub fn render_animation<I: IntoIterator<Item = TimedFrame>, P: AsRef<Path>>(
     let mut file = File::create(filename)?;
     let bytes = emit_svg_bytes(&root)?;
     file.write_all(&bytes)?;
-    validate_svg_bytes(&bytes)?;
     Ok(())
 }
 
@@ -780,6 +781,7 @@ fn emit_svg_bytes(element: &Element) -> Result<Vec<u8>> {
         &mut buf,
         EmitterConfig::new().write_document_declaration(false),
     )?;
+    validate_svg_bytes(&buf)?;
     Ok(buf)
 }
 
@@ -864,7 +866,10 @@ pub fn validate_svg<T: AsRef<[u8]>>(svg_data: T) -> Result<()> {
 }
 
 fn validate_svg_bytes(bytes: &[u8]) -> Result<()> {
-    Element::parse(bytes).map(|_| ())?;
+    let svg_text = str::from_utf8(bytes)
+        .map_err(|err| anyhow!("SVG output is not valid UTF-8: {err}"))?;
+    Document::parse(svg_text)
+        .map_err(|err| anyhow!("Invalid SVG emitted: {err}"))?;
     Ok(())
 }
 

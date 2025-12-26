@@ -60,6 +60,7 @@ fn record_and_render_flow() {
         .expect("render succeeds");
 
     assert!(render_path.exists());
+    assert_valid_svg(&render_path);
 }
 
 #[test]
@@ -81,6 +82,7 @@ fn render_with_existing_cast() {
     )
     .unwrap();
     assert!(svg_path.exists());
+    assert_valid_svg(&svg_path);
 }
 
 #[test]
@@ -103,6 +105,14 @@ fn render_honors_namespace_override() {
         .assert()
         .success();
 
+    assert_valid_svg(&svg_path);
     let svg = std::fs::read_to_string(&svg_path).unwrap();
     assert!(svg.contains(&format!("xmlns:termtosvg=\"{namespace}\"")));
+}
+
+fn assert_valid_svg(path: &std::path::Path) {
+    let xml = std::fs::read_to_string(path).expect("read SVG");
+    roxmltree::Document::parse(&xml).unwrap_or_else(|err| {
+        panic!("Invalid SVG emitted at {}: {err}", path.display());
+    });
 }

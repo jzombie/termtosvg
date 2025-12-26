@@ -103,6 +103,8 @@ fn compare_outputs(
     rust_svg: &Path,
     template_name: &str,
 ) -> Result<(), Box<dyn Error>> {
+    assert_valid_svg(python_svg)?;
+    assert_valid_svg(rust_svg)?;
     let python_bytes = std::fs::read(python_svg)?;
     let rust_bytes = std::fs::read(rust_svg)?;
     let python_dom = canonicalize_svg(&python_bytes)?;
@@ -176,4 +178,13 @@ fn canonicalize_node(node: &XMLNode) -> Option<CanonNode> {
         XMLNode::CData(data) => Some(CanonNode::CData(data.clone())),
         _ => None,
     }
+}
+
+fn assert_valid_svg(path: &Path) -> Result<(), Box<dyn Error>> {
+    let xml = std::fs::read_to_string(path)?;
+    roxmltree::Document::parse(&xml)
+        .map_err(|err| -> Box<dyn Error> {
+            format!("Invalid SVG emitted at {}: {err}", path.display()).into()
+        })?;
+    Ok(())
 }
