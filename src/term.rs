@@ -2,15 +2,15 @@ use std::collections::BTreeMap;
 use std::os::unix::io::{BorrowedFd, IntoRawFd, RawFd};
 use std::time::Instant;
 
-use nix::fcntl::{fcntl, FcntlArg, OFlag};
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use nix::libc;
-use nix::poll::{poll, PollFd, PollFlags};
-use nix::pty::{openpty, Winsize};
+use nix::poll::{PollFd, PollFlags, poll};
+use nix::pty::{Winsize, openpty};
 use nix::sys::termios::{self, SetArg, Termios};
 use nix::sys::wait::waitpid;
-use nix::unistd::{close, dup2, execvp, fork, read, write, ForkResult, Pid};
-use vte::{Params, Parser, Perform};
+use nix::unistd::{ForkResult, Pid, close, dup2, execvp, fork, read, write};
 use unicode_width::UnicodeWidthChar;
+use vte::{Params, Parser, Perform};
 
 use crate::anim::CharacterCell;
 use crate::asciicast::{AsciiCastV2Event, AsciiCastV2Header, AsciiCastV2Record};
@@ -42,7 +42,11 @@ impl TerminalMode {
         if let Ok(mut t) = termios::tcgetattr(unsafe { BorrowedFd::borrow_raw(self.fileno) }) {
             self.original_termios = Some(t.clone());
             termios::cfmakeraw(&mut t);
-            let _ = termios::tcsetattr(unsafe { BorrowedFd::borrow_raw(self.fileno) }, SetArg::TCSANOW, &t);
+            let _ = termios::tcsetattr(
+                unsafe { BorrowedFd::borrow_raw(self.fileno) },
+                SetArg::TCSANOW,
+                &t,
+            );
         }
 
         // Save window size
@@ -63,7 +67,11 @@ impl TerminalMode {
 impl Drop for TerminalMode {
     fn drop(&mut self) {
         if let Some(orig) = &self.original_termios {
-            let _ = termios::tcsetattr(unsafe { BorrowedFd::borrow_raw(self.fileno) }, SetArg::TCSANOW, orig);
+            let _ = termios::tcsetattr(
+                unsafe { BorrowedFd::borrow_raw(self.fileno) },
+                SetArg::TCSANOW,
+                orig,
+            );
         }
         if let Some(ws) = &self.original_winsize {
             unsafe {
@@ -126,7 +134,13 @@ fn spawn_pty(process_args: &[String], columns: u16, lines: u16) -> nix::Result<(
     }
 }
 
-pub fn record(process_args: &[String], columns: u16, lines: u16, input_fileno: RawFd, output_fileno: RawFd) -> Vec<AsciiCastV2Record> {
+pub fn record(
+    process_args: &[String],
+    columns: u16,
+    lines: u16,
+    input_fileno: RawFd,
+    output_fileno: RawFd,
+) -> Vec<AsciiCastV2Record> {
     let mut guard = TerminalMode::new(input_fileno);
     guard.enter();
 
@@ -185,7 +199,9 @@ pub fn record(process_args: &[String], columns: u16, lines: u16, input_fileno: R
                         if start.is_none() {
                             start = Some(now);
                         }
-                        let elapsed = start.map(|s| now.duration_since(s).as_secs_f64()).unwrap_or(0.0);
+                        let elapsed = start
+                            .map(|s| now.duration_since(s).as_secs_f64())
+                            .unwrap_or(0.0);
                         let text = String::from_utf8_lossy(&buf[..n]).to_string();
                         let _ = write(output_fileno, &buf[..n]);
                         records.push(AsciiCastV2Record::Event(
@@ -405,7 +421,9 @@ impl CellAttributes {
                                 }
                             }
                             2 => {
-                                if let (Some(r), Some(g), Some(b)) = (params.get(i + 2), params.get(i + 3), params.get(i + 4)) {
+                                if let (Some(r), Some(g), Some(b)) =
+                                    (params.get(i + 2), params.get(i + 3), params.get(i + 4))
+                                {
                                     self.set_fg_custom(rgb_color(*r, *g, *b));
                                     i += 4;
                                 }
@@ -431,7 +449,9 @@ impl CellAttributes {
                                 }
                             }
                             2 => {
-                                if let (Some(r), Some(g), Some(b)) = (params.get(i + 2), params.get(i + 3), params.get(i + 4)) {
+                                if let (Some(r), Some(g), Some(b)) =
+                                    (params.get(i + 2), params.get(i + 3), params.get(i + 4))
+                                {
                                     self.set_bg_custom(rgb_color(*r, *g, *b));
                                     i += 4;
                                 }
@@ -575,6 +595,69 @@ impl TerminalEmulator {
         self.cursor_row = self.height.saturating_sub(1);
     }
 
+    fn insert_blank_chars(&mut self, count: usize) {
+        if self.cursor_row >= self.height || self.cursor_col >= self.width {
+            return;
+        }
+        let available = self.width - self.cursor_col;
+        if available == 0 {
+            return;
+        }
+        let count = count.min(available);
+        if count == 0 {
+            return;
+        }
+        let row = &mut self.cells[self.cursor_row];
+        for offset in (0..(available - count)).rev() {
+            let src = self.cursor_col + offset;
+            let dst = src + count;
+            let value = row.get(src).cloned().unwrap_or(None);
+            row[dst] = value;
+        }
+        for offset in 0..count {
+            row[self.cursor_col + offset] = None;
+        }
+    }
+
+    fn delete_chars(&mut self, count: usize) {
+        if self.cursor_row >= self.height || self.cursor_col >= self.width {
+            return;
+        }
+        let available = self.width - self.cursor_col;
+        if available == 0 {
+            return;
+        }
+        let count = count.min(available);
+        if count == 0 {
+            return;
+        }
+        let row = &mut self.cells[self.cursor_row];
+        for offset in 0..available {
+            let dest = self.cursor_col + offset;
+            let src = dest + count;
+            let value = row.get(src).cloned().unwrap_or(None);
+            row[dest] = value;
+        }
+    }
+
+    fn erase_chars(&mut self, count: usize) {
+        if self.cursor_row >= self.height || self.cursor_col >= self.width {
+            return;
+        }
+        let available = self.width - self.cursor_col;
+        if available == 0 {
+            return;
+        }
+        let count = count.min(available);
+        if count == 0 {
+            return;
+        }
+        let row = &mut self.cells[self.cursor_row];
+        for offset in 0..count {
+            row[self.cursor_col + offset] = None;
+        }
+    }
+
     fn put_char(&mut self, ch: char) {
         let width = UnicodeWidthChar::width(ch).unwrap_or(1);
         if width == 0 {
@@ -672,7 +755,13 @@ impl Perform for TerminalEmulator {
         }
     }
 
-    fn csi_dispatch(&mut self, params: &Params, _intermediates: &[u8], _ignore: bool, action: char) {
+    fn csi_dispatch(
+        &mut self,
+        params: &Params,
+        _intermediates: &[u8],
+        _ignore: bool,
+        action: char,
+    ) {
         let p = |idx: usize, default: i64| {
             params
                 .iter()
@@ -682,6 +771,10 @@ impl Perform for TerminalEmulator {
                 .unwrap_or(default)
         };
         match action {
+            '@' => {
+                let count = p(0, 1).max(1) as usize;
+                self.insert_blank_chars(count);
+            }
             'A' => self.move_up(p(0, 1) as usize),
             'B' => self.move_down(p(0, 1) as usize),
             'C' => self.move_right(p(0, 1) as usize),
@@ -713,6 +806,10 @@ impl Perform for TerminalEmulator {
                 2 => self.clear_line(),
                 _ => {}
             },
+            'P' => {
+                let count = p(0, 1).max(1) as usize;
+                self.delete_chars(count);
+            }
             'm' => {
                 let vals: Vec<i64> = params
                     .iter()
@@ -725,6 +822,10 @@ impl Perform for TerminalEmulator {
                 if let Some((r, c)) = self.saved_cursor {
                     self.set_cursor(r, c);
                 }
+            }
+            'X' => {
+                let count = p(0, 1).max(1) as usize;
+                self.erase_chars(count);
             }
             _ => {}
         }

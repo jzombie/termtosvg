@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 
 static TEMPLATES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/old.python/termtosvg/data/templates");
 
@@ -27,18 +27,30 @@ pub fn validate_geometry(screen_geometry: &str) -> Result<(u16, u16), String> {
     let geometry = screen_geometry.to_lowercase();
     let parts: Vec<&str> = geometry.split('x').collect();
     if parts.len() != 2 {
-        return Err(format!("Invalid value for screen-geometry option: \"{}\"", screen_geometry));
+        return Err(format!(
+            "Invalid value for screen-geometry option: \"{}\"",
+            screen_geometry
+        ));
     }
 
-    let columns: u16 = parts[0]
-        .parse()
-        .map_err(|_| format!("Invalid value for screen-geometry option: \"{}\"", screen_geometry))?;
-    let rows: u16 = parts[1]
-        .parse()
-        .map_err(|_| format!("Invalid value for screen-geometry option: \"{}\"", screen_geometry))?;
+    let columns: u16 = parts[0].parse().map_err(|_| {
+        format!(
+            "Invalid value for screen-geometry option: \"{}\"",
+            screen_geometry
+        )
+    })?;
+    let rows: u16 = parts[1].parse().map_err(|_| {
+        format!(
+            "Invalid value for screen-geometry option: \"{}\"",
+            screen_geometry
+        )
+    })?;
 
     if columns == 0 || rows == 0 {
-        return Err(format!("Invalid value for screen-geometry option: \"{}\"", screen_geometry));
+        return Err(format!(
+            "Invalid value for screen-geometry option: \"{}\"",
+            screen_geometry
+        ));
     }
 
     Ok((columns, rows))

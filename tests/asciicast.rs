@@ -2,7 +2,14 @@ use termtosvg::asciicast::{self, AsciiCastV2Event, AsciiCastV2Header, AsciiCastV
 
 #[test]
 fn theme_validation_rejects_invalid_colors() {
-    assert!(AsciiCastV2Theme::new("red", "#000000", "#000000:#111111:#222222:#333333:#444444:#555555:#666666:#777777").is_err());
+    assert!(
+        AsciiCastV2Theme::new(
+            "red",
+            "#000000",
+            "#000000:#111111:#222222:#333333:#444444:#555555:#666666:#777777"
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -24,7 +31,7 @@ fn event_roundtrip() {
 #[test]
 fn read_v1_records_falls_back() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
-        let content = r#"{
+    let content = r#"{
     "version": 1,
     "width": 80,
     "height": 24,
@@ -33,5 +40,9 @@ fn read_v1_records_falls_back() {
 }"#;
     std::fs::write(tmp.path(), content).unwrap();
     let records = asciicast::read_records(tmp.path()).unwrap();
-    assert!(records.iter().any(|r| matches!(r, asciicast::AsciiCastV2Record::Header(_))));
+    assert!(
+        records
+            .iter()
+            .any(|r| matches!(r, asciicast::AsciiCastV2Record::Header(_)))
+    );
 }

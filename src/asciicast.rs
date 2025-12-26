@@ -26,14 +26,22 @@ pub struct AsciiCastV2Theme {
 impl AsciiCastV2Theme {
     pub fn new(fg: &str, bg: &str, palette: &str) -> Result<Self, AsciiCastError> {
         if !Self::is_color(fg) {
-            return Err(AsciiCastError::Message(format!("Invalid foreground color: {}", fg)));
+            return Err(AsciiCastError::Message(format!(
+                "Invalid foreground color: {}",
+                fg
+            )));
         }
         if !Self::is_color(bg) {
-            return Err(AsciiCastError::Message(format!("Invalid background color: {}", bg)));
+            return Err(AsciiCastError::Message(format!(
+                "Invalid background color: {}",
+                bg
+            )));
         }
         let parts: Vec<&str> = palette.split(':').collect();
         if !(parts.len() >= 8 && parts.len() <= 256) {
-            return Err(AsciiCastError::Message("Invalid palette: expecting at least 8 colors".into()));
+            return Err(AsciiCastError::Message(
+                "Invalid palette: expecting at least 8 colors".into(),
+            ));
         }
         let palette_valid = if parts.len() >= 16 {
             parts.iter().take(16).all(|p| Self::is_color(p))
@@ -41,7 +49,9 @@ impl AsciiCastV2Theme {
             parts.iter().take(8).all(|p| Self::is_color(p))
         };
         if !palette_valid {
-            return Err(AsciiCastError::Message("Invalid palette: the first 8 or 16 colors must be valid".into()));
+            return Err(AsciiCastError::Message(
+                "Invalid palette: the first 8 or 16 colors must be valid".into(),
+            ));
         }
 
         Ok(Self {
@@ -74,11 +84,25 @@ pub struct AsciiCastV2Header {
 }
 
 impl AsciiCastV2Header {
-    pub fn new(version: u8, width: u16, height: u16, theme: Option<AsciiCastV2Theme>, idle_time_limit: Option<f64>) -> Result<Self, AsciiCastError> {
+    pub fn new(
+        version: u8,
+        width: u16,
+        height: u16,
+        theme: Option<AsciiCastV2Theme>,
+        idle_time_limit: Option<f64>,
+    ) -> Result<Self, AsciiCastError> {
         if version != 2 {
-            return Err(AsciiCastError::Message("Only asciicast v2 format is supported".into()));
+            return Err(AsciiCastError::Message(
+                "Only asciicast v2 format is supported".into(),
+            ));
         }
-        Ok(Self { version, width, height, theme, idle_time_limit })
+        Ok(Self {
+            version,
+            width,
+            height,
+            theme,
+            idle_time_limit,
+        })
     }
 
     pub fn to_json_line(&self) -> Result<String, AsciiCastError> {
@@ -92,7 +116,9 @@ impl AsciiCastV2Header {
         }
         let header: AsciiCastV2Header = serde_json::from_value(value)?;
         if header.version != 2 {
-            return Err(AsciiCastError::Message("Only asciicast v2 format is supported".into()));
+            return Err(AsciiCastError::Message(
+                "Only asciicast v2 format is supported".into(),
+            ));
         }
         Ok(header)
     }
@@ -108,9 +134,17 @@ pub struct AsciiCastV2Event {
 }
 
 impl AsciiCastV2Event {
-    pub fn new(time: f64, event_type: &str, event_data: &str, duration: Option<f64>) -> Result<Self, AsciiCastError> {
+    pub fn new(
+        time: f64,
+        event_type: &str,
+        event_data: &str,
+        duration: Option<f64>,
+    ) -> Result<Self, AsciiCastError> {
         if !(event_type == "o" || event_type == "i") {
-            return Err(AsciiCastError::Message(format!("Invalid event_type: {}", event_type)));
+            return Err(AsciiCastError::Message(format!(
+                "Invalid event_type: {}",
+                event_type
+            )));
         }
         Ok(Self {
             time,
@@ -121,7 +155,8 @@ impl AsciiCastV2Event {
     }
 
     pub fn to_json_line(&self) -> Result<String, AsciiCastError> {
-        let array = serde_json::json!([self.time, self.event_type.clone(), self.event_data.clone()]);
+        let array =
+            serde_json::json!([self.time, self.event_type.clone(), self.event_data.clone()]);
         Ok(serde_json::to_string(&array)?)
     }
 
@@ -165,9 +200,16 @@ impl AsciiCastV2Record {
     pub fn from_json_line(line: &str) -> Result<Self, AsciiCastError> {
         let value: Value = serde_json::from_str(line)?;
         match value {
-            Value::Object(_) => Ok(AsciiCastV2Record::Header(AsciiCastV2Header::from_json_line(line)?)),
-            Value::Array(_) => Ok(AsciiCastV2Record::Event(AsciiCastV2Event::from_json_line(line)?)),
-            _ => Err(AsciiCastError::Message(format!("Unknown record type: {}", line))),
+            Value::Object(_) => Ok(AsciiCastV2Record::Header(
+                AsciiCastV2Header::from_json_line(line)?,
+            )),
+            Value::Array(_) => Ok(AsciiCastV2Record::Event(AsciiCastV2Event::from_json_line(
+                line,
+            )?)),
+            _ => Err(AsciiCastError::Message(format!(
+                "Unknown record type: {}",
+                line
+            ))),
         }
     }
 }
@@ -202,19 +244,31 @@ fn read_v1_records<P: AsRef<Path>>(path: P) -> Result<Vec<AsciiCastV2Record>, As
     let value: Value = serde_json::from_str(&content)?;
     let header_keys = ["version", "width", "height", "stdout"];
     if !header_keys.iter().all(|k| value.get(k).is_some()) {
-        return Err(AsciiCastError::Message("Missing attributes in asciicast v1 file".into()));
+        return Err(AsciiCastError::Message(
+            "Missing attributes in asciicast v1 file".into(),
+        ));
     }
     if value["version"].as_i64() != Some(1) {
-        return Err(AsciiCastError::Message("This function can only decode asciicast v1 data".into()));
+        return Err(AsciiCastError::Message(
+            "This function can only decode asciicast v1 data".into(),
+        ));
     }
 
-    let width = value["width"].as_u64().ok_or_else(|| AsciiCastError::Message("Invalid width".into()))? as u16;
-    let height = value["height"].as_u64().ok_or_else(|| AsciiCastError::Message("Invalid height".into()))? as u16;
+    let width = value["width"]
+        .as_u64()
+        .ok_or_else(|| AsciiCastError::Message("Invalid width".into()))? as u16;
+    let height = value["height"]
+        .as_u64()
+        .ok_or_else(|| AsciiCastError::Message("Invalid height".into()))? as u16;
 
     let mut events = Vec::new();
-    events.push(AsciiCastV2Record::Header(AsciiCastV2Header::new(2, width, height, None, None)?));
+    events.push(AsciiCastV2Record::Header(AsciiCastV2Header::new(
+        2, width, height, None, None,
+    )?));
 
-    let stdout_events = value["stdout"].as_array().ok_or_else(|| AsciiCastError::Message("Invalid stdout attribute".into()))?;
+    let stdout_events = value["stdout"]
+        .as_array()
+        .ok_or_else(|| AsciiCastError::Message("Invalid stdout attribute".into()))?;
     let mut elapsed = 0.0_f64;
     for ev in stdout_events {
         if !ev.is_array() || ev.as_array().unwrap().len() != 2 {
@@ -229,7 +283,9 @@ fn read_v1_records<P: AsRef<Path>>(path: P) -> Result<Vec<AsciiCastV2Record>, As
             .as_str()
             .ok_or_else(|| AsciiCastError::Message("Invalid event".into()))?;
         elapsed += time_delta;
-        events.push(AsciiCastV2Record::Event(AsciiCastV2Event::new(elapsed, "o", data, None)?));
+        events.push(AsciiCastV2Record::Event(AsciiCastV2Event::new(
+            elapsed, "o", data, None,
+        )?));
     }
 
     Ok(events)

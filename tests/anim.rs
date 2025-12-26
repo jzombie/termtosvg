@@ -44,8 +44,8 @@ fn render_animation_and_validate() {
         buffer: BTreeMap::new(),
     }];
     let output = tempfile::NamedTempFile::new().unwrap();
-    anim::render_animation(frames.clone(), (80, 24), output.path(), b"<svg></svg>")
-        .unwrap();
+    const TEMPLATE: &[u8] = include_bytes!("../old.python/termtosvg/data/templates/powershell.svg");
+    anim::render_animation(frames.clone(), (80, 24), output.path(), TEMPLATE).unwrap();
     let bytes = std::fs::read(output.path()).unwrap();
     anim::validate_svg(bytes.as_slice()).unwrap();
 }

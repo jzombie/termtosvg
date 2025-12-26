@@ -1,16 +1,22 @@
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::io::Write;
 use std::path::Path;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
+use indexmap::IndexMap;
 use once_cell::sync::Lazy;
 use unicode_width::UnicodeWidthStr;
-use xmltree::{Element, XMLNode};
+use xmltree::{Element, EmitterConfig, XMLNode};
 
 use crate::term::TimedFrame;
 
 pub const CELL_WIDTH: u16 = 8;
 pub const CELL_HEIGHT: u16 = 17;
+const FRAME_CELL_SPACING: i32 = 1;
+const TERMTOSVG_NS: &str = "https://github.com/nbedos/termtosvg";
+
+type DefinitionMap = IndexMap<String, Element>;
 
 static BG_RECT: Lazy<Element> = Lazy::new(|| {
     let mut rect = Element::new("rect");
@@ -55,8 +61,7 @@ impl CharacterCell {
     }
 }
 
-#[derive(Clone, Copy)]
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ConsecutiveKey<'a> {
     pub color: &'a str,
     pub bold: bool,
@@ -76,10 +81,14 @@ fn make_text_tag(column: usize, attr: &CharacterCell, text: &str, cell_width: u1
     );
 
     if attr.bold {
-        text_elem.attributes.insert("font-weight".into(), "bold".into());
+        text_elem
+            .attributes
+            .insert("font-weight".into(), "bold".into());
     }
     if attr.italics {
-        text_elem.attributes.insert("font-style".into(), "italic".into());
+        text_elem
+            .attributes
+            .insert("font-style".into(), "italic".into());
     }
     let mut decoration = Vec::new();
     if attr.underscore {
@@ -95,88 +104,137 @@ fn make_text_tag(column: usize, attr: &CharacterCell, text: &str, cell_width: u1
     }
 
     if attr.color.starts_with('#') {
-        text_elem.attributes.insert("fill".into(), attr.color.clone());
+        text_elem
+            .attributes
+            .insert("fill".into(), attr.color.clone());
     } else {
-        text_elem.attributes.insert("class".into(), attr.color.clone());
+        text_elem
+            .attributes
+            .insert("class".into(), attr.color.clone());
     }
 
     text_elem.children.push(XMLNode::Text(text.to_string()));
     text_elem
 }
 
-fn make_rect_tag(column: usize, length: usize, height: usize, cell_width: u16, cell_height: u16, background_color: &str) -> Element {
+fn make_rect_tag(
+    column: usize,
+    length: usize,
+    height: i32,
+    cell_width: u16,
+    cell_height: u16,
+    background_color: &str,
+) -> Element {
     let mut rect = Element::new("rect");
-    rect.attributes.insert("x".into(), (column as u32 * cell_width as u32).to_string());
+    rect.attributes
+        .insert("x".into(), (column as u32 * cell_width as u32).to_string());
     rect.attributes.insert("y".into(), height.to_string());
-    rect.attributes.insert("width".into(), (length as u32 * cell_width as u32).to_string());
-    rect.attributes.insert("height".into(), cell_height.to_string());
+    rect.attributes.insert(
+        "width".into(),
+        (length as u32 * cell_width as u32).to_string(),
+    );
+    rect.attributes
+        .insert("height".into(), cell_height.to_string());
 
     if background_color.starts_with('#') {
-        rect.attributes.insert("fill".into(), background_color.into());
+        rect.attributes
+            .insert("fill".into(), background_color.into());
     } else {
-        rect.attributes.insert("class".into(), background_color.into());
+        rect.attributes
+            .insert("class".into(), background_color.into());
     }
 
     rect
 }
 
-pub fn render_animation<I: IntoIterator<Item = TimedFrame>, P: AsRef<Path>>(frames: I, geometry: (u16, u16), filename: P, template: &[u8]) -> Result<()> {
+pub fn render_animation<I: IntoIterator<Item = TimedFrame>, P: AsRef<Path>>(
+    frames: I,
+    geometry: (u16, u16),
+    filename: P,
+    template: &[u8],
+) -> Result<()> {
     let mut root = render_preparation(geometry, template)?;
-    let (_width, height) = geometry;
+    let screen_height = geometry.1;
     let mut screen_view = Element::new("g");
-    screen_view.attributes.insert("id".into(), "screen_view".into());
+    screen_view
+        .attributes
+        .insert("id".into(), "screen_view".into());
 
-    let mut definitions: BTreeMap<String, Element> = BTreeMap::new();
+    let mut definitions: DefinitionMap = DefinitionMap::new();
     let mut timings: BTreeMap<u64, i32> = BTreeMap::new();
-    let mut animation_duration = 0_u64;
+    let mut animation_duration: Option<u64> = None;
+    let frame_stride = frame_vertical_stride(screen_height);
+
     for (frame_idx, frame) in frames.into_iter().enumerate() {
-        let offset = frame_idx as i32 * (height as i32 + 1) * CELL_HEIGHT as i32;
-        let (group, defs) = render_timed_frame(offset, &frame.buffer, CELL_HEIGHT, CELL_WIDTH, &definitions);
-        definitions.extend(defs);
-        animation_duration = frame.time + frame.duration;
+        let offset = frame_idx as i32 * frame_stride;
+        let (group, defs) =
+            render_timed_frame(offset, &frame.buffer, CELL_HEIGHT, CELL_WIDTH, &definitions);
+        definitions.extend(defs.into_iter());
+        animation_duration = Some(frame.time + frame.duration);
         timings.insert(frame.time, -offset);
         screen_view.children.push(XMLNode::Element(group));
     }
 
-    // attach definitions
-    let mut defs = Element::new("defs");
-    for def in definitions.values() {
-        defs.children.push(XMLNode::Element(def.clone()));
+    {
+        let screen = find_screen_mut(&mut root)
+            .ok_or_else(|| anyhow!("Missing <svg id=\"screen\"> element in template"))?;
+        let mut defs_elem = Element::new("defs");
+        for def in definitions.values() {
+            defs_elem.children.push(XMLNode::Element(def.clone()));
+        }
+        screen.children.push(XMLNode::Element(defs_elem));
+        screen.children.push(XMLNode::Element(screen_view));
     }
-    root.children.push(XMLNode::Element(defs));
 
-    root.children.push(XMLNode::Element(screen_view));
-    embed_css(&mut root, Some(&timings), Some(animation_duration))?;
+    let timings_option = if animation_duration.is_some() && !timings.is_empty() {
+        Some(&timings)
+    } else {
+        None
+    };
+    embed_css(&mut root, timings_option, animation_duration)?;
+
+    restore_template_whitespace(&mut root);
 
     let mut file = File::create(filename)?;
-    root.write(&mut file)?;
-    // ensure not empty and simple validation
-    let serialized_root = serialize_element(&root);
-    validate_svg_bytes(serialized_root.as_bytes())?;
+    let bytes = emit_svg_bytes(&root)?;
+    file.write_all(&bytes)?;
+    validate_svg_bytes(&bytes)?;
     Ok(())
 }
 
-pub fn render_still_frames<I: IntoIterator<Item = TimedFrame>, P: AsRef<Path>>(frames: I, geometry: (u16, u16), directory: P, template: &[u8]) -> Result<()> {
+pub fn render_still_frames<I: IntoIterator<Item = TimedFrame>, P: AsRef<Path>>(
+    frames: I,
+    geometry: (u16, u16),
+    directory: P,
+    template: &[u8],
+) -> Result<()> {
     std::fs::create_dir_all(directory.as_ref())?;
     let root = render_preparation(geometry, template)?;
+    let empty_defs = DefinitionMap::new();
     for (idx, frame) in frames.into_iter().enumerate() {
         let mut frame_root = root.clone();
-        let (group, defs) = render_timed_frame(0, &frame.buffer, CELL_HEIGHT, CELL_WIDTH, &BTreeMap::new());
+        let (group, defs) =
+            render_timed_frame(0, &frame.buffer, CELL_HEIGHT, CELL_WIDTH, &empty_defs);
 
-        let mut defs_elem = Element::new("defs");
-        for def in defs.values() {
-            defs_elem.children.push(XMLNode::Element(def.clone()));
+        {
+            let screen = find_screen_mut(&mut frame_root)
+                .ok_or_else(|| anyhow!("Missing <svg id=\"screen\"> element in template"))?;
+            let mut defs_elem = Element::new("defs");
+            for def in defs.values() {
+                defs_elem.children.push(XMLNode::Element(def.clone()));
+            }
+            screen.children.push(XMLNode::Element(defs_elem));
+            screen.children.push(XMLNode::Element(group));
         }
 
-        frame_root.children.push(XMLNode::Element(defs_elem));
-        frame_root.children.push(XMLNode::Element(group));
         embed_css(&mut frame_root, None, None)?;
 
-        let filename = directory
-            .as_ref()
-            .join(format!("termtosvg_{:05}.svg", idx));
+        restore_template_whitespace(&mut frame_root);
+
+        let filename = directory.as_ref().join(format!("termtosvg_{:05}.svg", idx));
         let mut file = File::create(filename)?;
-        frame_root.write(&mut file)?;
+        let bytes = emit_svg_bytes(&frame_root)?;
+        file.write_all(&bytes)?;
     }
     Ok(())
 }
@@ -184,9 +242,11 @@ pub fn render_still_frames<I: IntoIterator<Item = TimedFrame>, P: AsRef<Path>>(f
 pub fn render_preparation(geometry: (u16, u16), template: &[u8]) -> Result<Element> {
     let mut root = resize_template(template, geometry)?;
     // clear previous screen content and ensure bg rect exists
-    if let Some(screen) = root.get_mut_child("svg") {
+    if let Some(screen) = find_screen_mut(&mut root) {
         screen.children.clear();
         screen.children.push(XMLNode::Element(BG_RECT.clone()));
+    } else {
+        return Err(anyhow!("Missing <svg id=\"screen\"> element in template"));
     }
     Ok(root)
 }
@@ -196,16 +256,24 @@ pub fn render_timed_frame(
     buffer: &BTreeMap<usize, BTreeMap<usize, CharacterCell>>,
     cell_height: u16,
     cell_width: u16,
-    definitions: &BTreeMap<String, Element>,
-) -> (Element, BTreeMap<String, Element>) {
+    definitions: &DefinitionMap,
+) -> (Element, DefinitionMap) {
     let mut frame_group = Element::new("g");
-    let mut new_definitions: BTreeMap<String, Element> = BTreeMap::new();
+    let mut new_definitions: DefinitionMap = DefinitionMap::new();
 
     for (row, line) in buffer.iter() {
         if line.is_empty() {
             continue;
         }
-        let (mut tags, defs) = render_line(offset, *row, line, cell_height, cell_width, definitions, &new_definitions);
+        let (mut tags, defs) = render_line(
+            offset,
+            *row,
+            line,
+            cell_height,
+            cell_width,
+            definitions,
+            &new_definitions,
+        );
         frame_group.children.append(&mut tags);
         new_definitions.extend(defs);
     }
@@ -219,22 +287,27 @@ fn render_line(
     row_data: &BTreeMap<usize, CharacterCell>,
     cell_height: u16,
     cell_width: u16,
-    definitions: &BTreeMap<String, Element>,
-    local_defs: &BTreeMap<String, Element>,
-) -> (Vec<XMLNode>, BTreeMap<String, Element>) {
+    definitions: &DefinitionMap,
+    local_defs: &DefinitionMap,
+) -> (Vec<XMLNode>, DefinitionMap) {
     let mut nodes = Vec::new();
+    let cell_height_i32 = i32::from(cell_height);
+    let line_position = offset + row as i32 * cell_height_i32;
 
     // backgrounds
-    for rect in render_line_bg_colors(row_data, (offset + row as i32 * cell_height as i32) as usize, cell_height, cell_width) {
+    for rect in render_line_bg_colors(row_data, line_position, cell_height, cell_width) {
         nodes.push(XMLNode::Element(rect));
     }
 
     // text group
     let text_group = render_characters(row_data, cell_width);
     let serialized = serialize_element(&text_group);
-    let mut new_defs = BTreeMap::new();
+    let mut new_defs = DefinitionMap::new();
     let mut group_id = None;
-    if let Some(existing) = definitions.get(&serialized).or_else(|| local_defs.get(&serialized)) {
+    if let Some(existing) = definitions
+        .get(&serialized)
+        .or_else(|| local_defs.get(&serialized))
+    {
         group_id = existing.attributes.get("id").cloned();
     }
     if group_id.is_none() {
@@ -248,17 +321,22 @@ fn render_line(
         let mut use_tag = Element::new("use");
         use_tag
             .attributes
-            .insert("href".into(), format!("#{id}"));
+            .insert("xlink:href".into(), format!("#{id}"));
         use_tag
             .attributes
-            .insert("y".into(), (offset + row as i32 * cell_height as i32).to_string());
+            .insert("y".into(), line_position.to_string());
         nodes.push(XMLNode::Element(use_tag));
     }
 
     (nodes, new_defs)
 }
 
-pub fn render_line_bg_colors(row: &BTreeMap<usize, CharacterCell>, height: usize, cell_height: u16, cell_width: u16) -> Vec<Element> {
+pub fn render_line_bg_colors(
+    row: &BTreeMap<usize, CharacterCell>,
+    height: i32,
+    cell_height: u16,
+    cell_width: u16,
+) -> Vec<Element> {
     let mut rects = Vec::new();
     let iter: Vec<(usize, &CharacterCell)> = row
         .iter()
@@ -276,7 +354,14 @@ pub fn render_line_bg_colors(row: &BTreeMap<usize, CharacterCell>, height: usize
 
     let flush = |start: usize, width: usize, color: &str, rects: &mut Vec<Element>| {
         if width > 0 {
-            rects.push(make_rect_tag(start, width, height, cell_width, cell_height, color));
+            rects.push(make_rect_tag(
+                start,
+                width,
+                height,
+                cell_width,
+                cell_height,
+                color,
+            ));
         }
     };
 
@@ -358,140 +443,358 @@ fn cell_from_key(key: ConsecutiveKey<'_>, text: &str) -> CharacterCell {
     }
 }
 
+fn frame_vertical_stride(rows: u16) -> i32 {
+    let base = i32::from(rows) + FRAME_CELL_SPACING;
+    let even = base + (base % 2);
+    even * i32::from(CELL_HEIGHT)
+}
+
 pub fn resize_template(template: &[u8], geometry: (u16, u16)) -> Result<Element> {
-    let (columns, rows) = geometry;
-    let viewbox_width = columns as u32 * CELL_WIDTH as u32;
-    let viewbox_height = rows as u32 * CELL_HEIGHT as u32;
+    let mut root = Element::parse(template).map_err(|_| anyhow!("Invalid template"))?;
+    let (template_columns, template_rows) = ensure_template_defaults(&mut root, geometry)?;
+    let delta_columns = i32::from(geometry.0) - i32::from(template_columns);
+    let delta_rows = i32::from(geometry.1) - i32::from(template_rows);
 
-    let parsed = Element::parse(template);
-    let mut root = match parsed {
-        Ok(element) => element,
-        Err(_) => {
-            let mut root = Element::new("svg");
-            root.attributes.insert("viewBox".into(), format!("0 0 {} {}", viewbox_width, viewbox_height));
-            root
-        }
-    };
-
-    root.attributes
-        .insert("viewBox".into(), format!("0 0 {} {}", viewbox_width, viewbox_height));
-    root.attributes.insert("width".into(), viewbox_width.to_string());
-    root.attributes.insert("height".into(), viewbox_height.to_string());
-
-    // ensure screen svg exists
-    let mut has_screen = false;
-    for child in root.children.iter_mut() {
-        if let XMLNode::Element(elem) = child {
-            if elem.name == "svg" && elem.attributes.get("id") == Some(&"screen".to_string()) {
-                has_screen = true;
-                elem.attributes
-                    .insert("viewBox".into(), format!("0 0 {} {}", viewbox_width, viewbox_height));
-                elem.attributes.insert("width".into(), viewbox_width.to_string());
-                elem.attributes.insert("height".into(), viewbox_height.to_string());
-            }
-        }
-    }
-    if !has_screen {
-        let mut screen = Element::new("svg");
-        screen.attributes.insert("id".into(), "screen".into());
-        screen.attributes.insert("viewBox".into(), format!("0 0 {} {}", viewbox_width, viewbox_height));
-        screen.attributes.insert("width".into(), viewbox_width.to_string());
-        screen.attributes.insert("height".into(), viewbox_height.to_string());
-        root.children.push(XMLNode::Element(screen));
+    apply_scale(&mut root, delta_columns, delta_rows)?;
+    {
+        let screen = find_screen_mut(&mut root)
+            .ok_or_else(|| anyhow!("Missing <svg id=\"screen\"> element in template"))?;
+        apply_scale(screen, delta_columns, delta_rows)?;
     }
 
-    ensure_defaults(&mut root, columns, rows, viewbox_width, viewbox_height);
     Ok(root)
 }
 
-fn ensure_defaults(root: &mut Element, columns: u16, rows: u16, viewbox_width: u32, viewbox_height: u32) {
-    let mut has_defs = false;
-    for child in root.children.iter_mut() {
-        if let XMLNode::Element(elem) = child {
-            if elem.name == "defs" {
-                has_defs = true;
-                ensure_template_settings(elem, columns, rows);
-                ensure_style(elem);
-                ensure_script(elem);
-            }
+fn ensure_template_defaults(root: &mut Element, geometry: (u16, u16)) -> Result<(u16, u16)> {
+    let defs_index = find_or_create_defs_index(root);
+    let (template_columns, template_rows) = match root.children.get_mut(defs_index) {
+        Some(XMLNode::Element(defs)) => {
+            let values = ensure_template_settings(defs, geometry.0, geometry.1)?;
+            ensure_style(defs);
+            values
+        }
+        _ => return Err(anyhow!("Unable to locate <defs> element in template")),
+    };
+    Ok((template_columns, template_rows))
+}
+
+fn find_or_create_defs_index(root: &mut Element) -> usize {
+    if let Some((idx, _)) =
+        root.children.iter().enumerate().find(
+            |(_, child)| matches!(child, XMLNode::Element(elem) if node_name_eq(elem, "defs")),
+        )
+    {
+        return idx;
+    }
+    root.children.push(XMLNode::Element(Element::new("defs")));
+    root.children.len() - 1
+}
+
+fn ensure_template_settings(defs: &mut Element, columns: u16, rows: u16) -> Result<(u16, u16)> {
+    let settings = ensure_child(defs, "template_settings", || {
+        let mut element = Element::new("termtosvg:template_settings");
+        element
+            .attributes
+            .insert("xmlns:termtosvg".into(), TERMTOSVG_NS.into());
+        element
+    });
+    let has_namespace_attr = settings.attributes.contains_key("xmlns:termtosvg");
+    let has_namespace_decl = settings
+        .namespaces
+        .as_ref()
+        .and_then(|ns| ns.get("termtosvg"))
+        .is_some();
+    if !has_namespace_attr && !has_namespace_decl {
+        settings
+            .attributes
+            .insert("xmlns:termtosvg".into(), TERMTOSVG_NS.into());
+    }
+
+    let _animation = ensure_child(settings, "animation", || {
+        let mut element = Element::new("termtosvg:animation");
+        element.attributes.insert("type".into(), "css".into());
+        element
+    });
+
+    let screen_geometry = ensure_child(settings, "screen_geometry", || {
+        let mut element = Element::new("termtosvg:screen_geometry");
+        element
+            .attributes
+            .insert("columns".into(), columns.to_string());
+        element.attributes.insert("rows".into(), rows.to_string());
+        element
+    });
+
+    let template_columns = screen_geometry
+        .attributes
+        .get("columns")
+        .ok_or_else(|| anyhow!("Missing \"columns\" attribute in screen_geometry"))?
+        .parse::<u16>()
+        .map_err(|_| anyhow!("Invalid \"columns\" attribute in screen_geometry"))?;
+    let template_rows = screen_geometry
+        .attributes
+        .get("rows")
+        .ok_or_else(|| anyhow!("Missing \"rows\" attribute in screen_geometry"))?
+        .parse::<u16>()
+        .map_err(|_| anyhow!("Invalid \"rows\" attribute in screen_geometry"))?;
+
+    screen_geometry
+        .attributes
+        .insert("columns".into(), columns.to_string());
+    screen_geometry
+        .attributes
+        .insert("rows".into(), rows.to_string());
+
+    Ok((template_columns, template_rows))
+}
+
+fn ensure_child<'a>(
+    parent: &'a mut Element,
+    name: &str,
+    builder: impl FnOnce() -> Element,
+) -> &'a mut Element {
+    if let Some(idx) = parent
+        .children
+        .iter()
+        .enumerate()
+        .find_map(|(idx, child)| match child {
+            XMLNode::Element(elem) if node_name_eq(elem, name) => Some(idx),
+            _ => None,
+        })
+    {
+        match parent.children.get_mut(idx) {
+            Some(XMLNode::Element(elem)) => return elem,
+            _ => unreachable!("Matched child must be an element"),
         }
     }
-    if !has_defs {
-        let mut defs = Element::new("defs");
-        ensure_template_settings(&mut defs, columns, rows);
-        ensure_style(&mut defs);
-        ensure_script(&mut defs);
-        root.children.push(XMLNode::Element(defs));
+    parent.children.push(XMLNode::Element(builder()));
+    match parent.children.last_mut() {
+        Some(XMLNode::Element(elem)) => elem,
+        _ => unreachable!("Newly inserted child must be an element"),
     }
-    root.attributes
-        .insert("viewBox".into(), format!("0 0 {} {}", viewbox_width, viewbox_height));
-    root.attributes.insert("width".into(), viewbox_width.to_string());
-    root.attributes.insert("height".into(), viewbox_height.to_string());
 }
 
 fn ensure_style(defs: &mut Element) {
-    if defs
-        .children
-        .iter()
-        .any(|c| matches!(c, XMLNode::Element(e) if e.name == "style" && e.attributes.get("id") == Some(&"generated-style".to_string())))
-    {
+    if defs.children.iter().any(|child| matches!(child, XMLNode::Element(elem) if elem.name == "style" && elem.attributes.get("id") == Some(&"generated-style".to_string()))) {
         return;
     }
     let mut style = Element::new("style");
-    style.attributes.insert("id".into(), "generated-style".into());
+    style
+        .attributes
+        .insert("id".into(), "generated-style".into());
+    style.attributes.insert("type".into(), "text/css".into());
     defs.children.push(XMLNode::Element(style));
 }
 
-fn ensure_script(defs: &mut Element) {
-    if defs
-        .children
-        .iter()
-        .any(|c| matches!(c, XMLNode::Element(e) if e.name == "script" && e.attributes.get("id") == Some(&"generated-js".to_string())))
-    {
-        return;
+fn node_name_eq(element: &Element, expected: &str) -> bool {
+    if element.name == expected {
+        return true;
     }
-    let mut script = Element::new("script");
-    script.attributes.insert("id".into(), "generated-js".into());
-    defs.children.push(XMLNode::Element(script));
+    element
+        .name
+        .rsplit_once(':')
+        .map(|(_, local)| local == expected)
+        .unwrap_or(false)
 }
 
-fn ensure_template_settings(defs: &mut Element, columns: u16, rows: u16) {
-    if defs
-        .children
-        .iter()
-        .any(|c| matches!(c, XMLNode::Element(e) if e.name == "template_settings"))
+fn find_screen_mut(element: &mut Element) -> Option<&mut Element> {
+    if element.name == "svg"
+        && element
+            .attributes
+            .get("id")
+            .map(|id| id == "screen")
+            .unwrap_or(false)
     {
+        return Some(element);
+    }
+    for child in element.children.iter_mut() {
+        if let XMLNode::Element(elem) = child {
+            if let Some(found) = find_screen_mut(elem) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn apply_scale(element: &mut Element, delta_columns: i32, delta_rows: i32) -> Result<()> {
+    if delta_columns == 0 && delta_rows == 0 {
+        return Ok(());
+    }
+    let viewbox_value = element
+        .attributes
+        .get("viewBox")
+        .ok_or_else(|| anyhow!("Missing \"viewBox\" attribute"))?
+        .replace(',', " ");
+    let parts: Vec<&str> = viewbox_value.split_whitespace().collect();
+    if parts.len() != 4 {
+        return Err(anyhow!("Invalid viewBox attribute"));
+    }
+    let min_x: i32 = parts[0]
+        .parse()
+        .map_err(|_| anyhow!("Invalid viewBox attribute"))?;
+    let min_y: i32 = parts[1]
+        .parse()
+        .map_err(|_| anyhow!("Invalid viewBox attribute"))?;
+    let mut width: i32 = parts[2]
+        .parse()
+        .map_err(|_| anyhow!("Invalid viewBox attribute"))?;
+    let mut height: i32 = parts[3]
+        .parse()
+        .map_err(|_| anyhow!("Invalid viewBox attribute"))?;
+
+    width += delta_columns * i32::from(CELL_WIDTH);
+    height += delta_rows * i32::from(CELL_HEIGHT);
+
+    element.attributes.insert(
+        "viewBox".into(),
+        format!("{min_x} {min_y} {width} {height}"),
+    );
+
+    adjust_numeric_attr(element, "width", delta_columns * i32::from(CELL_WIDTH))?;
+    adjust_numeric_attr(element, "height", delta_rows * i32::from(CELL_HEIGHT))?;
+    Ok(())
+}
+
+fn adjust_numeric_attr(element: &mut Element, name: &str, delta: i32) -> Result<()> {
+    if delta == 0 {
+        return Ok(());
+    }
+    if let Some(value) = element.attributes.get_mut(name) {
+        let current: i32 = value
+            .parse()
+            .map_err(|_| anyhow!("Attribute {name} must be numeric"))?;
+        *value = (current + delta).to_string();
+    }
+    Ok(())
+}
+
+fn restore_template_whitespace(root: &mut Element) {
+    let mut defs_elem: Option<Element> = None;
+    let mut screen_elem: Option<Element> = None;
+    let mut others: Vec<XMLNode> = Vec::new();
+
+    for child in root.children.drain(..) {
+        match child {
+            XMLNode::Element(elem) if node_name_eq(&elem, "defs") => defs_elem = Some(elem),
+            XMLNode::Element(elem)
+                if elem.name == "svg"
+                    && elem
+                        .attributes
+                        .get("id")
+                        .map(|id| id == "screen")
+                        .unwrap_or(false) =>
+            {
+                screen_elem = Some(elem)
+            }
+            XMLNode::Text(text) if text.trim().is_empty() => continue,
+            other => others.push(other),
+        }
+    }
+
+    let mut rebuilt = Vec::new();
+
+    if let Some(mut defs) = defs_elem {
+        format_defs_children(&mut defs);
+        rebuilt.push(XMLNode::Text("\n    ".into()));
+        rebuilt.push(XMLNode::Element(defs));
+    }
+
+    if let Some(mut screen) = screen_elem {
+        format_screen_children(&mut screen);
+        if rebuilt.is_empty() {
+            rebuilt.push(XMLNode::Text("\n    ".into()));
+        } else {
+            rebuilt.push(XMLNode::Text("\n    ".into()));
+        }
+        rebuilt.push(XMLNode::Element(screen));
+        rebuilt.push(XMLNode::Text("\n".into()));
+    }
+
+    if !others.is_empty() {
+        rebuilt.extend(others);
+    }
+
+    if rebuilt.is_empty() {
+        root.children = Vec::new();
+    } else {
+        root.children = rebuilt;
+    }
+}
+
+fn format_defs_children(defs: &mut Element) {
+    let mut meaningful = Vec::new();
+    for child in defs.children.drain(..) {
+        match &child {
+            XMLNode::Text(text) if text.trim().is_empty() => continue,
+            _ => meaningful.push(child),
+        }
+    }
+
+    if meaningful.is_empty() {
+        defs.children.clear();
         return;
     }
-    let mut settings = Element::new("template_settings");
-    let mut geom = Element::new("screen_geometry");
-    geom.attributes.insert("columns".into(), columns.to_string());
-    geom.attributes.insert("rows".into(), rows.to_string());
-    settings.children.push(XMLNode::Element(geom));
 
-    let mut animation = Element::new("animation");
-    animation.attributes.insert("type".into(), "css".into());
-    settings.children.push(XMLNode::Element(animation));
+    let mut rebuilt = Vec::new();
+    for child in meaningful {
+        rebuilt.push(XMLNode::Text("\n        ".into()));
+        rebuilt.push(child);
+    }
+    rebuilt.push(XMLNode::Text("\n    ".into()));
+    defs.children = rebuilt;
+}
 
-    defs.children.push(XMLNode::Element(settings));
+fn format_screen_children(screen: &mut Element) {
+    let mut meaningful = Vec::new();
+    for child in screen.children.drain(..) {
+        match &child {
+            XMLNode::Text(text) if text.trim().is_empty() => continue,
+            _ => meaningful.push(child),
+        }
+    }
+
+    if meaningful.is_empty() {
+        screen.children.clear();
+        return;
+    }
+
+    let mut rebuilt = Vec::new();
+    rebuilt.push(XMLNode::Text("\n    ".into()));
+    rebuilt.extend(meaningful);
+    screen.children = rebuilt;
+}
+
+fn emit_svg_bytes(element: &Element) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    element.write_with_config(
+        &mut buf,
+        EmitterConfig::new()
+            .write_document_declaration(false)
+            .pad_self_closing(false),
+    )?;
+    Ok(buf)
 }
 
 fn serialize_element(element: &Element) -> String {
-    let mut buf = Vec::new();
-    element.write(&mut buf).unwrap();
-    String::from_utf8_lossy(&buf).into_owned()
+    let bytes = emit_svg_bytes(element).expect("Failed to serialize element");
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn find_style_mut(root: &mut Element) -> Option<&mut Element> {
     for node in root.children.iter_mut() {
         if let XMLNode::Element(elem) = node {
-            if elem.name == "style" && elem.attributes.get("id") == Some(&"generated-style".to_string()) {
+            if elem.name == "style"
+                && elem.attributes.get("id") == Some(&"generated-style".to_string())
+            {
                 return Some(elem);
             }
             if elem.name == "defs" {
                 for child in elem.children.iter_mut() {
                     if let XMLNode::Element(e) = child {
-                        if e.name == "style" && e.attributes.get("id") == Some(&"generated-style".to_string()) {
+                        if e.name == "style"
+                            && e.attributes.get("id") == Some(&"generated-style".to_string())
+                        {
                             return Some(e);
                         }
                     }
@@ -502,7 +805,10 @@ fn find_style_mut(root: &mut Element) -> Option<&mut Element> {
     None
 }
 
-pub fn validate_template(name: &str, templates: &std::collections::HashMap<String, Vec<u8>>) -> Result<Vec<u8>> {
+pub fn validate_template(
+    name: &str,
+    templates: &std::collections::HashMap<String, Vec<u8>>,
+) -> Result<Vec<u8>> {
     if let Some(bytes) = templates.get(name) {
         return Ok(bytes.clone());
     }
@@ -511,41 +817,52 @@ pub fn validate_template(name: &str, templates: &std::collections::HashMap<Strin
     Ok(data)
 }
 
-pub fn embed_css(root: &mut Element, timings: Option<&BTreeMap<u64, i32>>, animation_duration: Option<u64>) -> Result<()> {
+const CSS_BODY: &str = "#screen {\n                font-family: 'DejaVu Sans Mono', monospace;\n                font-style: normal;\n                font-size: 14px;\n            }\n\n        text {\n            dominant-baseline: text-before-edge;\n            white-space: pre;\n        }\n    \n";
+
+pub fn embed_css(
+    root: &mut Element,
+    timings: Option<&BTreeMap<u64, i32>>,
+    animation_duration: Option<u64>,
+) -> Result<()> {
     let Some(style) = find_style_mut(root) else {
         return Err(anyhow!("Missing <style id=\"generated-style\"> element"));
     };
 
-    let base_css = "#screen {\n                font-family: 'DejaVu Sans Mono', monospace;\n                font-style: normal;\n                font-size: 14px;\n                line-height: 17px;\n            }\n\n        text {\n            dominant-baseline: text-before-edge;\n            white-space: pre;\n        }\n    ";
-
-    let final_css = if let (Some(timings), Some(duration)) = (timings, animation_duration) {
+    let mut final_css = CSS_BODY.to_string();
+    if let (Some(timings), Some(duration)) = (timings, animation_duration) {
         if duration == 0 {
             return Err(anyhow!("Animation duration must be greater than 0"));
         }
         let mut transforms = Vec::new();
-        let mut last_offset = 0_i32;
+        let mut last_offset: Option<i32> = None;
         for (time, offset) in timings.iter() {
-            last_offset = *offset;
             let percent = 100.0 * (*time as f64) / duration as f64;
             transforms.push(format!("{percent:.3}%{{transform:translateY({offset}px)}}"));
+            last_offset = Some(*offset);
         }
-        transforms.push(format!("100%{{transform:translateY({last_offset}px)}}"));
-        format!(
-            "{base_css}\n:root {{ --animation-duration: {duration}ms; }}\n@keyframes roll {{{transforms}}}\n#screen_view {{ animation-duration: {duration}ms; animation-iteration-count:infinite; animation-name:roll; animation-timing-function: steps(1,end); animation-fill-mode: forwards; }}",
-            base_css = base_css,
+        if let Some(offset) = last_offset {
+            transforms.push(format!("100.000%{{transform:translateY({offset}px)}}"));
+        }
+
+        let transform_block = transforms.join("\n");
+        let css_animation = format!(
+            "            :root {{\n                --animation-duration: {duration}ms;\n            }}\n\n            @keyframes roll {{\n                {transform_block}\n            }}\n\n            #screen_view {{\n                animation-duration: {duration}ms;\n                animation-iteration-count:infinite;\n                animation-name:roll;\n                animation-timing-function: steps(1,end);\n                animation-fill-mode: forwards;\n            }}\n        ",
             duration = duration,
-            transforms = transforms.join(" ")
-        )
-    } else {
-        base_css.to_string()
-    };
+            transform_block = transform_block
+        );
+        final_css.push_str(&css_animation);
+    }
 
     style.children.clear();
-    style.children.push(XMLNode::Text(final_css));
+    style.children.push(XMLNode::CData(final_css));
     Ok(())
 }
 
-pub fn embed_waapi(root: &mut Element, timings: Option<&BTreeMap<u64, i32>>, animation_duration: Option<u64>) -> Result<()> {
+pub fn embed_waapi(
+    root: &mut Element,
+    timings: Option<&BTreeMap<u64, i32>>,
+    animation_duration: Option<u64>,
+) -> Result<()> {
     embed_css(root, timings, animation_duration)
 }
 

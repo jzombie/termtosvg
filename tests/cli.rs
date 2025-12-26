@@ -48,8 +48,12 @@ fn record_and_render_flow() {
         cast_path.display().to_string(),
         render_path.display().to_string(),
     ];
-    cli::run(render_args, std::io::stdin().as_raw_fd(), std::io::stdout().as_raw_fd())
-        .expect("render succeeds");
+    cli::run(
+        render_args,
+        std::io::stdin().as_raw_fd(),
+        std::io::stdout().as_raw_fd(),
+    )
+    .expect("render succeeds");
 
     assert!(render_path.exists());
 }
@@ -66,6 +70,11 @@ fn render_with_existing_cast() {
         cast.path().display().to_string(),
         svg_path.display().to_string(),
     ];
-    cli::run(args, std::io::stdin().as_raw_fd(), std::io::stdout().as_raw_fd()).unwrap();
+    cli::run(
+        args,
+        std::io::stdin().as_raw_fd(),
+        std::io::stdout().as_raw_fd(),
+    )
+    .unwrap();
     assert!(svg_path.exists());
 }

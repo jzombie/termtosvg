@@ -4,8 +4,8 @@ use std::os::unix::io::RawFd;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
+use rand::{Rng, distributions::Alphanumeric};
 use tempfile::NamedTempFile;
-use rand::{distributions::Alphanumeric, Rng};
 
 use crate::anim;
 use crate::asciicast::{self, AsciiCastV2Record};
@@ -143,8 +143,15 @@ pub fn run(args: Vec<String>, input_fileno: RawFd, output_fileno: RawFd) -> Resu
                 .or_else(|| record_args.output_path_pos.clone())
                 .unwrap_or_else(|| temp_cast_file());
             let process_args = parse_process_args(&record_args.command_to_record);
-            let geometry = geometry_or_default(record_args.screen_geometry.as_deref(), output_fileno)?;
-            record_subcommand(process_args, geometry, input_fileno, output_fileno, &cast_filename)?;
+            let geometry =
+                geometry_or_default(record_args.screen_geometry.as_deref(), output_fileno)?;
+            record_subcommand(
+                process_args,
+                geometry,
+                input_fileno,
+                output_fileno,
+                &cast_filename,
+            )?;
             println!("cast file created at {cast_filename}");
         }
         Some(Commands::Render(render_args)) => {
@@ -219,7 +226,13 @@ fn record_subcommand(
     cast_filename: &str,
 ) -> Result<()> {
     eprintln!("Recording started, press Ctrl-D to finish");
-    let records = term::record(&process_args, geometry.0, geometry.1, input_fileno, output_fileno);
+    let records = term::record(
+        &process_args,
+        geometry.0,
+        geometry.1,
+        input_fileno,
+        output_fileno,
+    );
     let mut file = File::create(cast_filename)?;
     for record in records {
         let line = match record {
@@ -241,9 +254,15 @@ fn render_subcommand(
     loop_delay: u64,
 ) -> Result<()> {
     let records = asciicast::read_records(cast_filename)?;
-    let (geometry, frames_iter) = term::timed_frames(records, min_frame_duration, max_frame_duration, loop_delay);
+    let (geometry, frames_iter) =
+        term::timed_frames(records, min_frame_duration, max_frame_duration, loop_delay);
     if still {
-        anim::render_still_frames(frames_iter.collect::<Vec<TimedFrame>>(), geometry, output_path, template)?;
+        anim::render_still_frames(
+            frames_iter.collect::<Vec<TimedFrame>>(),
+            geometry,
+            output_path,
+            template,
+        )?;
     } else {
         anim::render_animation(frames_iter, geometry, output_path, template)?;
     }
@@ -262,10 +281,22 @@ fn record_render_subcommand(
     max_frame_duration: Option<u64>,
     loop_delay: u64,
 ) -> Result<()> {
-    let records = term::record(&process_args, geometry.0, geometry.1, input_fileno, output_fileno);
-    let (geometry, frames_iter) = term::timed_frames(records, min_frame_duration, max_frame_duration, loop_delay);
+    let records = term::record(
+        &process_args,
+        geometry.0,
+        geometry.1,
+        input_fileno,
+        output_fileno,
+    );
+    let (geometry, frames_iter) =
+        term::timed_frames(records, min_frame_duration, max_frame_duration, loop_delay);
     if still {
-        anim::render_still_frames(frames_iter.collect::<Vec<TimedFrame>>(), geometry, output_path, template)?;
+        anim::render_still_frames(
+            frames_iter.collect::<Vec<TimedFrame>>(),
+            geometry,
+            output_path,
+            template,
+        )?;
     } else {
         anim::render_animation(frames_iter, geometry, output_path, template)?;
     }
