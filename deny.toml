@@ -1,0 +1,12 @@
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Unlicense",
+  "BSD-2-Clause",
+  "LGPL-2.1-or-later",
+  "Unicode-3.0",
+]
+
+[advisories]
+ignore = []

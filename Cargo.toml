@@ -3,6 +3,7 @@ name = "termtosvg"
 version = "0.1.0-alpha"
 edition = "2024"
 repository = "https://github.com/jzombie/termtosvg-rs"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1.0.100"
