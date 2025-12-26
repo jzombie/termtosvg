@@ -366,15 +366,20 @@ pub fn resize_template(template: &[u8], geometry: (u16, u16)) -> Result<Element>
     };
 
     root.attributes
-        .entry("viewBox".into())
-        .or_insert_with(|| format!("0 0 {} {}", viewbox_width, viewbox_height));
+        .insert("viewBox".into(), format!("0 0 {} {}", viewbox_width, viewbox_height));
+    root.attributes.insert("width".into(), viewbox_width.to_string());
+    root.attributes.insert("height".into(), viewbox_height.to_string());
 
     // ensure screen svg exists
     let mut has_screen = false;
-    for child in root.children.iter() {
+    for child in root.children.iter_mut() {
         if let XMLNode::Element(elem) = child {
             if elem.name == "svg" && elem.attributes.get("id") == Some(&"screen".to_string()) {
                 has_screen = true;
+                elem.attributes
+                    .insert("viewBox".into(), format!("0 0 {} {}", viewbox_width, viewbox_height));
+                elem.attributes.insert("width".into(), viewbox_width.to_string());
+                elem.attributes.insert("height".into(), viewbox_height.to_string());
             }
         }
     }
@@ -382,6 +387,8 @@ pub fn resize_template(template: &[u8], geometry: (u16, u16)) -> Result<Element>
         let mut screen = Element::new("svg");
         screen.attributes.insert("id".into(), "screen".into());
         screen.attributes.insert("viewBox".into(), format!("0 0 {} {}", viewbox_width, viewbox_height));
+        screen.attributes.insert("width".into(), viewbox_width.to_string());
+        screen.attributes.insert("height".into(), viewbox_height.to_string());
         root.children.push(XMLNode::Element(screen));
     }
 
@@ -409,8 +416,9 @@ fn ensure_defaults(root: &mut Element, columns: u16, rows: u16, viewbox_width: u
         root.children.push(XMLNode::Element(defs));
     }
     root.attributes
-        .entry("viewBox".into())
-        .or_insert_with(|| format!("0 0 {} {}", viewbox_width, viewbox_height));
+        .insert("viewBox".into(), format!("0 0 {} {}", viewbox_width, viewbox_height));
+    root.attributes.insert("width".into(), viewbox_width.to_string());
+    root.attributes.insert("height".into(), viewbox_height.to_string());
 }
 
 fn ensure_style(defs: &mut Element) {
@@ -500,7 +508,7 @@ pub fn embed_css(root: &mut Element, timings: Option<&BTreeMap<u64, i32>>, anima
         return Err(anyhow!("Missing <style id=\"generated-style\"> element"));
     };
 
-    let base_css = "#screen {\n                font-family: 'DejaVu Sans Mono', monospace;\n                font-style: normal;\n                font-size: 14px;\n            }\n\n        text {\n            dominant-baseline: text-before-edge;\n            white-space: pre;\n        }\n    ";
+    let base_css = "#screen {\n                font-family: 'Menlo', 'Monaco', 'Consolas', 'DejaVu Sans Mono', 'Liberation Mono', monospace;\n                font-style: normal;\n                font-size: 13px;\n                line-height: 17px;\n            }\n\n        text {\n            dominant-baseline: text-before-edge;\n            white-space: pre;\n        }\n    ";
 
     let final_css = if let (Some(timings), Some(duration)) = (timings, animation_duration) {
         if duration == 0 {
