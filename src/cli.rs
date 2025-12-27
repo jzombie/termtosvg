@@ -380,9 +380,7 @@ fn render_stdin_stream(
         AsciiCastV2Record::Header(AsciiCastV2Header::new(
             2, geometry.0, geometry.1, None, None,
         )?),
-        AsciiCastV2Record::Event(AsciiCastV2Event::new(
-            0.0, "o", &buf, None,
-        )?),
+        AsciiCastV2Record::Event(AsciiCastV2Event::new(0.0, "o", &buf, None)?),
     ];
 
     render_records(
