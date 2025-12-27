@@ -5,6 +5,7 @@ use std::os::unix::io::RawFd;
 
 use anyhow::Result;
 use clap::{Args, Command, CommandFactory, FromArgMatches, Parser, Subcommand};
+use indoc::indoc;
 use nix::unistd::isatty;
 use rand::{Rng, distr::Alphanumeric};
 use tempfile::NamedTempFile;
@@ -18,7 +19,31 @@ pub const DEFAULT_LOOP_DELAY: u64 = 1000;
 
 #[derive(Parser, Debug)]
 #[command(name = "termtosvg")]
-#[command(about = "Record a terminal session and render an SVG animation", long_about = None)]
+#[command(
+        about = "Record a terminal session and render an SVG animation",
+        long_about = indoc!(r#"
+                Record a terminal session and render an SVG animation.
+
+                Stdin behavior:
+
+                - When run with the `render` subcommand, `-` may be used as the input filename
+                    to read an asciicast recording from stdin (v2 lines or v1 JSON).
+                - When the program is invoked with no subcommand and stdin is a pipe, the
+                    stdin bytes are treated as raw terminal output and rendered as a single
+                    `o` event. To force parsing stdin as an asciicast, use `render -`.
+
+                Examples:
+
+                    # Render a cast file on disk
+                    termtosvg render demo.cast -o out.svg
+
+                    # Render an asciicast streamed to stdin
+                    cat demo.cast | termtosvg render - -o piped.svg
+
+                    # Pipe raw terminal output (ANSI sequences preserved) to the default mode
+                    neofetch | termtosvg -g 82x24 -o neofetch.svg
+        "#),
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -147,9 +172,7 @@ pub fn run(args: Vec<String>, input_fileno: RawFd, output_fileno: RawFd) -> Resu
 
     let mut cmd = Cli::command();
     cmd = annotate_template_help(cmd, template_help);
-    let matches = cmd
-        .try_get_matches_from(&args)
-        .map_err(|e: clap::Error| anyhow::anyhow!(e.to_string()))?;
+    let matches = cmd.try_get_matches_from(&args).unwrap_or_else(|e| e.exit());
     let cli =
         Cli::from_arg_matches(&matches).map_err(|e: clap::Error| anyhow::anyhow!(e.to_string()))?;
     let templates = config::default_templates();
@@ -222,15 +245,49 @@ pub fn run(args: Vec<String>, input_fileno: RawFd, output_fileno: RawFd) -> Resu
                     cli.loop_delay,
                 )?;
             } else {
-                render_stdin_stream(
-                    cli.still_frames,
-                    template_bytes.as_slice(),
-                    geometry,
-                    &output_path,
-                    cli.min_frame_duration,
-                    cli.max_frame_duration,
-                    cli.loop_delay,
-                )?;
+                use std::io::Read;
+
+                let mut stdin = std::io::stdin();
+                let mut buf = String::new();
+                stdin.read_to_string(&mut buf)?;
+                if buf.is_empty() {
+                    anyhow::bail!("No data received on stdin to render");
+                }
+
+                // If stdin contains a full asciicast (v2 lines or v1), parse
+                // and render it as such. Otherwise treat the input as raw
+                // terminal output and render a single event containing the
+                // bytes read.
+                match asciicast::parse_records_from_str(&buf) {
+                    Ok(records) if !records.is_empty() => {
+                        render_records(
+                            cli.still_frames,
+                            template_bytes.as_slice(),
+                            records,
+                            &output_path,
+                            cli.min_frame_duration,
+                            cli.max_frame_duration,
+                            cli.loop_delay,
+                        )?;
+                    }
+                    _ => {
+                        let records = vec![
+                            AsciiCastV2Record::Header(AsciiCastV2Header::new(
+                                2, geometry.0, geometry.1, None, None,
+                            )?),
+                            AsciiCastV2Record::Event(AsciiCastV2Event::new(0.0, "o", &buf, None)?),
+                        ];
+                        render_records(
+                            cli.still_frames,
+                            template_bytes.as_slice(),
+                            records,
+                            &output_path,
+                            cli.min_frame_duration,
+                            cli.max_frame_duration,
+                            cli.loop_delay,
+                        )?;
+                    }
+                }
             }
             println!("rendered to {output_path}");
         }

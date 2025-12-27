@@ -41,6 +41,35 @@ To render an asciicast streamed on stdin, pass `-` as the input file:
 cat demo.cast | cargo run -- render - --output piped.svg
 ```
 
+### Rendering from stdin (examples)
+
+You can render asciicast data streamed on stdin using the `render -` form:
+
+```sh
+# render an asciicast file piped to stdin
+cat demo.cast | cargo run -- render - --output piped.svg
+
+# or with an installed binary
+cat demo.cast | termtosvg render - -o piped.svg
+```
+
+If you pipe raw terminal output (not an asciicast) into the program without
+using the `render` subcommand, the Rust binary will treat the bytes on stdin
+as raw terminal output and render a single `o` event containing that data.
+This is convenient for single-shot captures where you don't have a cast file:
+
+```sh
+neofetch | cargo run -- --screen-geometry 82x24 --output neofetch.svg
+```
+
+To explicitly force parsing stdin as an asciicast when piping into the default
+invocation, use `/dev/stdin` as the input filename for compatibility with the
+original Python implementation:
+
+```sh
+cat demo.cast | termtosvg render /dev/stdin -o piped.svg
+```
+
 `--template` accepts either a built-in template name (no `.svg` extension) or a
 path to a custom SVG template.
 

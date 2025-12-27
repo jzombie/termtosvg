@@ -158,6 +158,31 @@ fn render_subcommand_accepts_dash_stdin() {
     assert!(svg.contains("dash stdin"));
 }
 
+#[test]
+fn render_reads_htop_cast_from_stdin() {
+    let output_dir = tempdir().unwrap();
+    let svg_path = output_dir.path().join("htop.svg");
+
+    let cast_path = format!("{}/tests/data/htop.cast", env!("CARGO_MANIFEST_DIR"));
+    let cast_content = std::fs::read_to_string(&cast_path).expect("read htop.cast");
+
+    let mut child = Command::new(assert_cmd::cargo::cargo_bin!("termtosvg"))
+        .args(["render", "-", svg_path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("spawn termtosvg render -");
+
+    {
+        let stdin = child.stdin.as_mut().expect("child stdin available");
+        stdin.write_all(cast_content.as_bytes()).unwrap();
+    }
+
+    assert!(child.wait().unwrap().success());
+    assert_valid_svg(&svg_path);
+    let svg = std::fs::read_to_string(&svg_path).unwrap();
+    assert!(svg.contains("htop"));
+}
+
 fn assert_valid_svg(path: &std::path::Path) {
     let xml = std::fs::read_to_string(path).expect("read SVG");
     roxmltree::Document::parse(&xml).unwrap_or_else(|err| {

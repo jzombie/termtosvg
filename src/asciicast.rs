@@ -247,6 +247,29 @@ pub fn read_records<P: AsRef<Path>>(path: P) -> Result<Vec<AsciiCastV2Record>, A
     Ok(records)
 }
 
+/// Parse records from a string containing either asciicast v2 (line-by-line JSON)
+/// or asciicast v1 (single JSON object) and return the normalized v2 records.
+pub fn parse_records_from_str(content: &str) -> Result<Vec<AsciiCastV2Record>, AsciiCastError> {
+    let mut records = Vec::new();
+
+    // Try v2: line by line JSON records
+    for raw_line in content.lines() {
+        let line = raw_line.trim_end_matches(['\n', '\r'].as_ref()).trim();
+        if line.is_empty() {
+            continue;
+        }
+        match AsciiCastV2Record::from_json_line(line) {
+            Ok(rec) => records.push(rec),
+            Err(err) => {
+                // Fall back to v1 parsing using full content
+                return read_v1_records_from_str(content).map_err(|_| err);
+            }
+        }
+    }
+
+    Ok(records)
+}
+
 fn read_v1_records_from_str(content: &str) -> Result<Vec<AsciiCastV2Record>, AsciiCastError> {
     let value: Value = serde_json::from_str(content)?;
     let header_keys = ["version", "width", "height", "stdout"];
