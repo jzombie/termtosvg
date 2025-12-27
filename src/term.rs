@@ -209,8 +209,12 @@ pub fn record(
                         let elapsed = start
                             .map(|s| now.duration_since(s).as_secs_f64())
                             .unwrap_or(0.0);
-                        let text = String::from_utf8_lossy(&buf[..n]).to_string();
                         let _ = write(output_fd, &buf[..n]);
+                        let text_raw = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let text = strip_prompt_markers(&text_raw);
+                        if text.is_empty() {
+                            continue;
+                        }
                         records.push(AsciiCastV2Record::Event(
                             AsciiCastV2Event::new(elapsed, "o", &text, None).expect("event"),
                         ));
@@ -230,6 +234,132 @@ pub fn record(
     }
     let _ = waitpid(child_pid, None);
     records
+}
+
+fn strip_prompt_markers(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut modified = false;
+    let mut remainder = text;
+    while let Some(pos) = remainder.find('\n') {
+        let (line, rest) = remainder.split_at(pos + 1);
+        if is_marker_line(line) {
+            modified = true;
+        } else {
+            result.push_str(line);
+        }
+        remainder = rest;
+    }
+    if !remainder.is_empty() {
+        if is_marker_line(remainder) {
+            modified = true;
+        } else {
+            result.push_str(remainder);
+        }
+    }
+    if modified { result } else { text.to_string() }
+}
+
+fn is_marker_line(line: &str) -> bool {
+    let cleaned = strip_ansi_sequences(line);
+    let trimmed = cleaned.trim_matches(|c: char| c.is_whitespace() || c == '\r' || c == '\n');
+    trimmed == "%"
+}
+
+fn strip_ansi_sequences(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            0x1b => {
+                i += 1;
+                if i >= bytes.len() {
+                    break;
+                }
+                match bytes[i] as char {
+                    '[' => {
+                        i += 1;
+                        while i < bytes.len() {
+                            let ch = bytes[i] as char;
+                            i += 1;
+                            if ('@'..='~').contains(&ch) {
+                                break;
+                            }
+                        }
+                    }
+                    ']' => {
+                        i += 1;
+                        while i < bytes.len() {
+                            let ch = bytes[i] as char;
+                            i += 1;
+                            if ch == '\u{0007}' {
+                                break;
+                            }
+                            if ch == '\u{001b}' {
+                                if i < bytes.len() && bytes[i] as char == '\\' {
+                                    i += 1;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    '(' | ')' | '*' | '+' | '-' | '.' | '/' => {
+                        i += 1; // consume designator character
+                    }
+                    _ => {}
+                }
+            }
+            byte => {
+                result.push(byte as char);
+                i += 1;
+            }
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::{strip_ansi_sequences, strip_prompt_markers, is_marker_line};
+
+    #[test]
+    fn removes_standalone_percent_line() {
+        let input = "%\r\nuser@host %";
+        let output = strip_prompt_markers(input);
+        assert_eq!(output, "user@host %");
+    }
+
+    #[test]
+    fn preserves_non_marker_percent() {
+        let input = "% complete\n";
+        let output = strip_prompt_markers(input);
+        assert_eq!(output, "% complete\n");
+    }
+
+    #[test]
+    fn removes_only_marker_chunk_with_spaces() {
+        let input = "%    \r";
+        let output = strip_prompt_markers(input);
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn removes_marker_with_ansi_sequences() {
+        let input = "\x1b[0m%\x1b[0m\r\nreal prompt\n";
+        let output = strip_prompt_markers(input);
+        assert_eq!(output, "real prompt\n");
+    }
+
+    #[test]
+    fn strip_ansi_sequences_removes_control_codes() {
+        let cleaned = strip_ansi_sequences("\x1b[31mred\x1b[0m");
+        assert_eq!(cleaned, "red");
+    }
+
+    #[test]
+    fn marker_detection_ignores_whitespace_and_ansi() {
+        assert!(is_marker_line("  \x1b[0m%\x1b[0m  \r"));
+    }
 }
 
 pub fn _group_by_time(
