@@ -376,13 +376,14 @@ fn render_stdin_stream(
         anyhow::bail!("No data received on stdin to render");
     }
 
-    let mut records = Vec::new();
-    records.push(AsciiCastV2Record::Header(AsciiCastV2Header::new(
-        2, geometry.0, geometry.1, None, None,
-    )?));
-    records.push(AsciiCastV2Record::Event(AsciiCastV2Event::new(
-        0.0, "o", &buf, None,
-    )?));
+    let records = vec![
+        AsciiCastV2Record::Header(AsciiCastV2Header::new(
+            2, geometry.0, geometry.1, None, None,
+        )?),
+        AsciiCastV2Record::Event(AsciiCastV2Event::new(
+            0.0, "o", &buf, None,
+        )?),
+    ];
 
     render_records(
         still,
