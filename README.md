@@ -1,6 +1,12 @@
-![Example](./another_small_test.svg)
-
 # termtosvg (Rust port)
+
+**THIS IS A PROTOTYPE PORT. DOCUMENTATION MAY BE INCORRECT AND API FUNCTIONALITY MAY BE DIFFERENT THAN EXPECTED. USE AT YOUR OWN RISK.**
+
+I am uploading this to crates.io as a test commit to simply see if the following SVG renders in an animated fashion there.
+
+This is ported from the original [Python code](https://github.com/nbedos/termtosvg), and uses a custom test harness to verify the outputs match up.
+
+![Example](./another_small_test.svg)
 
 This crate is a clean-room Rust reimplementation of the original Python
 [termtosvg](https://github.com/nbedos/termtosvg). It records an interactive

@@ -1,8 +1,9 @@
 [package]
 name = "termtosvg"
+description = "Preliminary Rust port of termtosvg. Only here for testing."
 version = "0.1.0-alpha"
 edition = "2024"
-repository = "https://github.com/jzombie/termtosvg-rs"
+repository = "https://github.com/jzombie/termtosvg"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
