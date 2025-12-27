@@ -169,13 +169,23 @@ fn canonicalize_node(node: &XMLNode) -> Option<CanonNode> {
     match node {
         XMLNode::Element(child) => Some(CanonNode::Element(canonicalize_element(child))),
         XMLNode::Text(text) => {
-            if text.trim().is_empty() {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
                 None
             } else {
-                Some(CanonNode::Text(text.clone()))
+                Some(CanonNode::Text(trimmed.to_string()))
             }
         }
-        XMLNode::CData(data) => Some(CanonNode::CData(data.clone())),
+        // Normalize whitespace in CDATA so stylistic differences (e.g., minified vs pretty CSS)
+        // don't cause false negatives when comparing semantically equivalent SVGs.
+        XMLNode::CData(data) => {
+            let normalized: String = data.split_whitespace().collect();
+            if normalized.is_empty() {
+                None
+            } else {
+                Some(CanonNode::CData(normalized))
+            }
+        }
         _ => None,
     }
 }

@@ -778,7 +778,9 @@ fn emit_svg_bytes(element: &Element) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     element.write_with_config(
         &mut buf,
-        EmitterConfig::new().write_document_declaration(false),
+        EmitterConfig::new()
+            .write_document_declaration(false)
+            .perform_indent(false),
     )?;
     validate_svg_bytes(&buf)?;
     Ok(buf)
@@ -819,7 +821,7 @@ pub fn validate_template(
     Ok(data)
 }
 
-const CSS_BODY: &str = "#screen {\n                font-family: 'DejaVu Sans Mono', monospace;\n                font-style: normal;\n                font-size: 14px;\n            }\n\n        text {\n            dominant-baseline: text-before-edge;\n            white-space: pre;\n        }\n    \n";
+const CSS_BODY: &str = "#screen{font-family:'DejaVu Sans Mono',monospace;font-style:normal;font-size:14px;}text{dominant-baseline:text-before-edge;white-space:pre;}";
 
 pub fn embed_css(
     root: &mut Element,
@@ -846,11 +848,9 @@ pub fn embed_css(
             transforms.push(format!("100.000%{{transform:translateY({offset}px)}}"));
         }
 
-        let transform_block = transforms.join("\n");
+        let transform_block = transforms.join("");
         let css_animation = format!(
-            "            :root {{\n                --animation-duration: {duration}ms;\n            }}\n\n            @keyframes roll {{\n                {transform_block}\n            }}\n\n            #screen_view {{\n                animation-duration: {duration}ms;\n                animation-iteration-count:infinite;\n                animation-name:roll;\n                animation-timing-function: steps(1,end);\n                animation-fill-mode: forwards;\n            }}\n        ",
-            duration = duration,
-            transform_block = transform_block
+            ":root{{--animation-duration:{duration}ms;}}@keyframes roll{{{transform_block}}}#screen_view{{animation-duration:{duration}ms;animation-iteration-count:infinite;animation-name:roll;animation-timing-function:steps(1,end);animation-fill-mode:forwards;}}",
         );
         final_css.push_str(&css_animation);
     }
