@@ -1,14 +1,17 @@
 use std::fs::File;
 use std::io::Write;
+use std::os::fd::BorrowedFd;
 use std::os::unix::io::RawFd;
 
 use anyhow::Result;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Command, CommandFactory, FromArgMatches, Parser, Subcommand};
+use indoc::indoc;
+use nix::unistd::isatty;
+use rand::{Rng, distr::Alphanumeric};
 use tempfile::NamedTempFile;
-use rand::{distributions::Alphanumeric, Rng};
 
 use crate::anim;
-use crate::asciicast::{self, AsciiCastV2Record};
+use crate::asciicast::{self, AsciiCastV2Event, AsciiCastV2Header, AsciiCastV2Record};
 use crate::config;
 use crate::term::{self, TimedFrame};
 
@@ -16,7 +19,31 @@ pub const DEFAULT_LOOP_DELAY: u64 = 1000;
 
 #[derive(Parser, Debug)]
 #[command(name = "termtosvg")]
-#[command(about = "Record a terminal session and render an SVG animation", long_about = None)]
+#[command(
+        about = "Record a terminal session and render an SVG animation",
+        long_about = indoc!(r#"
+                Record a terminal session and render an SVG animation.
+
+                Stdin behavior:
+
+                - When run with the `render` subcommand, `-` may be used as the input filename
+                    to read an asciicast recording from stdin (v2 lines or v1 JSON).
+                - When the program is invoked with no subcommand and stdin is a pipe, the
+                    stdin bytes are treated as raw terminal output and rendered as a single
+                    `o` event. To force parsing stdin as an asciicast, use `render -`.
+
+                Examples:
+
+                      # Render a cast file on disk
+                      termtosvg render tests/data/prompt_longline.cast -o out.svg
+
+                      # Render an asciicast streamed to stdin
+                      cat tests/data/prompt_longline.cast | termtosvg render - -o piped.svg
+
+                    # Pipe raw terminal output (ANSI sequences preserved) to the default mode
+                    neofetch | termtosvg -g 82x24 -o neofetch.svg
+        "#),
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -132,7 +159,22 @@ pub fn integral_duration_validation(value: &str) -> Result<u64, String> {
 }
 
 pub fn run(args: Vec<String>, input_fileno: RawFd, output_fileno: RawFd) -> Result<()> {
-    let cli = Cli::parse_from(args);
+    // Integrate template names into clap's help output by rewriting the
+    // `template` argument help text before parsing CLI arguments.
+    let templates = config::default_templates();
+    let mut names: Vec<&str> = templates.keys().map(|s| s.as_str()).collect();
+    names.sort();
+    let template_help = format!(
+        "Template name or path. Built-in templates: {}",
+        names.join(", ")
+    );
+    let template_help: &'static str = Box::leak(template_help.into_boxed_str());
+
+    let mut cmd = Cli::command();
+    cmd = annotate_template_help(cmd, template_help);
+    let matches = cmd.try_get_matches_from(&args).unwrap_or_else(|e| e.exit());
+    let cli =
+        Cli::from_arg_matches(&matches).map_err(|e: clap::Error| anyhow::anyhow!(e.to_string()))?;
     let templates = config::default_templates();
     let default_template = "powershell".to_string();
     match &cli.command {
@@ -141,10 +183,17 @@ pub fn run(args: Vec<String>, input_fileno: RawFd, output_fileno: RawFd) -> Resu
                 .output_path
                 .clone()
                 .or_else(|| record_args.output_path_pos.clone())
-                .unwrap_or_else(|| temp_cast_file());
+                .unwrap_or_else(temp_cast_file);
             let process_args = parse_process_args(&record_args.command_to_record);
-            let geometry = geometry_or_default(record_args.screen_geometry.as_deref(), output_fileno)?;
-            record_subcommand(process_args, geometry, input_fileno, output_fileno, &cast_filename)?;
+            let geometry =
+                geometry_or_default(record_args.screen_geometry.as_deref(), output_fileno)?;
+            record_subcommand(
+                process_args,
+                geometry,
+                input_fileno,
+                output_fileno,
+                &cast_filename,
+            )?;
             println!("cast file created at {cast_filename}");
         }
         Some(Commands::Render(render_args)) => {
@@ -170,8 +219,8 @@ pub fn run(args: Vec<String>, input_fileno: RawFd, output_fileno: RawFd) -> Resu
             println!("rendered to {output_path}");
         }
         None => {
-            // record and render on the fly
-            eprintln!("Recording started, press Ctrl-D to finish");
+            let stdin_is_tty =
+                unsafe { isatty(BorrowedFd::borrow_raw(input_fileno)).unwrap_or(true) };
             let template_name = cli.template.clone().unwrap_or(default_template);
             let template_bytes = anim::validate_template(&template_name, &templates)?;
             let output_path = cli
@@ -180,19 +229,66 @@ pub fn run(args: Vec<String>, input_fileno: RawFd, output_fileno: RawFd) -> Resu
                 .or_else(|| cli.output_path_pos.clone())
                 .unwrap_or_else(|| default_output_path(cli.still_frames));
             let geometry = geometry_or_default(cli.screen_geometry.as_deref(), output_fileno)?;
-            let process_args = parse_process_args(&cli.command_to_record);
-            record_render_subcommand(
-                process_args,
-                cli.still_frames,
-                template_bytes.as_slice(),
-                geometry,
-                input_fileno,
-                output_fileno,
-                &output_path,
-                cli.min_frame_duration,
-                cli.max_frame_duration,
-                cli.loop_delay,
-            )?;
+            if stdin_is_tty {
+                eprintln!("Recording started, press Ctrl-D to finish");
+                let process_args = parse_process_args(&cli.command_to_record);
+                record_render_subcommand(
+                    process_args,
+                    cli.still_frames,
+                    template_bytes.as_slice(),
+                    geometry,
+                    input_fileno,
+                    output_fileno,
+                    &output_path,
+                    cli.min_frame_duration,
+                    cli.max_frame_duration,
+                    cli.loop_delay,
+                )?;
+            } else {
+                use std::io::Read;
+
+                let mut stdin = std::io::stdin();
+                let mut buf = String::new();
+                stdin.read_to_string(&mut buf)?;
+                if buf.is_empty() {
+                    anyhow::bail!("No data received on stdin to render");
+                }
+
+                // If stdin contains a full asciicast (v2 lines or v1), parse
+                // and render it as such. Otherwise treat the input as raw
+                // terminal output and render a single event containing the
+                // bytes read.
+                match asciicast::parse_records_from_str(&buf) {
+                    Ok(records) if !records.is_empty() => {
+                        render_records(
+                            cli.still_frames,
+                            template_bytes.as_slice(),
+                            records,
+                            &output_path,
+                            cli.min_frame_duration,
+                            cli.max_frame_duration,
+                            cli.loop_delay,
+                        )?;
+                    }
+                    _ => {
+                        let records = vec![
+                            AsciiCastV2Record::Header(AsciiCastV2Header::new(
+                                2, geometry.0, geometry.1, None, None,
+                            )?),
+                            AsciiCastV2Record::Event(AsciiCastV2Event::new(0.0, "o", &buf, None)?),
+                        ];
+                        render_records(
+                            cli.still_frames,
+                            template_bytes.as_slice(),
+                            records,
+                            &output_path,
+                            cli.min_frame_duration,
+                            cli.max_frame_duration,
+                            cli.loop_delay,
+                        )?;
+                    }
+                }
+            }
             println!("rendered to {output_path}");
         }
     }
@@ -219,7 +315,13 @@ fn record_subcommand(
     cast_filename: &str,
 ) -> Result<()> {
     eprintln!("Recording started, press Ctrl-D to finish");
-    let records = term::record(&process_args, geometry.0, geometry.1, input_fileno, output_fileno);
+    let records = term::record(
+        &process_args,
+        geometry.0,
+        geometry.1,
+        input_fileno,
+        output_fileno,
+    );
     let mut file = File::create(cast_filename)?;
     for record in records {
         let line = match record {
@@ -241,15 +343,18 @@ fn render_subcommand(
     loop_delay: u64,
 ) -> Result<()> {
     let records = asciicast::read_records(cast_filename)?;
-    let (geometry, frames_iter) = term::timed_frames(records, min_frame_duration, max_frame_duration, loop_delay);
-    if still {
-        anim::render_still_frames(frames_iter.collect::<Vec<TimedFrame>>(), geometry, output_path, template)?;
-    } else {
-        anim::render_animation(frames_iter, geometry, output_path, template)?;
-    }
-    Ok(())
+    render_records(
+        still,
+        template,
+        records,
+        output_path,
+        min_frame_duration,
+        max_frame_duration,
+        loop_delay,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record_render_subcommand(
     process_args: Vec<String>,
     still: bool,
@@ -262,10 +367,47 @@ fn record_render_subcommand(
     max_frame_duration: Option<u64>,
     loop_delay: u64,
 ) -> Result<()> {
-    let records = term::record(&process_args, geometry.0, geometry.1, input_fileno, output_fileno);
-    let (geometry, frames_iter) = term::timed_frames(records, min_frame_duration, max_frame_duration, loop_delay);
+    let records = term::record(
+        &process_args,
+        geometry.0,
+        geometry.1,
+        input_fileno,
+        output_fileno,
+    );
+    let (geometry, frames_iter) =
+        term::timed_frames(records, min_frame_duration, max_frame_duration, loop_delay);
     if still {
-        anim::render_still_frames(frames_iter.collect::<Vec<TimedFrame>>(), geometry, output_path, template)?;
+        anim::render_still_frames(
+            frames_iter.collect::<Vec<TimedFrame>>(),
+            geometry,
+            output_path,
+            template,
+        )?;
+    } else {
+        anim::render_animation(frames_iter, geometry, output_path, template)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_records(
+    still: bool,
+    template: &[u8],
+    records: Vec<AsciiCastV2Record>,
+    output_path: &str,
+    min_frame_duration: u64,
+    max_frame_duration: Option<u64>,
+    loop_delay: u64,
+) -> Result<()> {
+    let (geometry, frames_iter) =
+        term::timed_frames(records, min_frame_duration, max_frame_duration, loop_delay);
+    if still {
+        anim::render_still_frames(
+            frames_iter.collect::<Vec<TimedFrame>>(),
+            geometry,
+            output_path,
+            template,
+        )?;
     } else {
         anim::render_animation(frames_iter, geometry, output_path, template)?;
     }
@@ -296,7 +438,7 @@ fn temp_cast_file() -> String {
 }
 
 fn temp_still_dir() -> Result<String> {
-    let rand_suffix: String = rand::thread_rng()
+    let rand_suffix: String = rand::rng()
         .sample_iter(&Alphanumeric)
         .take(10)
         .map(char::from)
@@ -308,4 +450,25 @@ fn temp_still_dir() -> Result<String> {
 
 fn default_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "sh".into())
+}
+
+fn annotate_template_help(mut command: Command, help: &'static str) -> Command {
+    let has_template_arg = command
+        .get_arguments()
+        .any(|arg| arg.get_id() == "template");
+    if has_template_arg {
+        command = command.mut_arg("template", |arg| arg.help(help).long_help(help));
+    }
+
+    let sub_names: Vec<String> = command
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_string())
+        .collect();
+    for name in sub_names {
+        if let Some(sub) = command.find_subcommand_mut(&name) {
+            let sub_owned = std::mem::take(sub);
+            *sub = annotate_template_help(sub_owned, help);
+        }
+    }
+    command
 }

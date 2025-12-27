@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use termtosvg::anim;
 use termtosvg::anim::CharacterCell;
+use termtosvg::config::default_templates;
 use termtosvg::term::TimedFrame;
 
 fn cell(text: &str, fg: &str, bg: &str) -> CharacterCell {
@@ -27,7 +28,7 @@ fn render_characters_groups_text_with_same_style() {
     line.insert(5, cell("C", "blue", "background"));
 
     let group = anim::render_characters(&line, anim::CELL_WIDTH);
-    // expect two text nodes
+    // expect consecutive cells with same style to merge into one text node
     let count = group
         .children
         .iter()
@@ -44,8 +45,11 @@ fn render_animation_and_validate() {
         buffer: BTreeMap::new(),
     }];
     let output = tempfile::NamedTempFile::new().unwrap();
-    anim::render_animation(frames.clone(), (80, 24), output.path(), b"<svg></svg>")
-        .unwrap();
+    let templates = default_templates();
+    let tpl = templates
+        .get("powershell")
+        .expect("missing embedded template");
+    anim::render_animation(frames.clone(), (80, 24), output.path(), tpl.as_slice()).unwrap();
     let bytes = std::fs::read(output.path()).unwrap();
     anim::validate_svg(bytes.as_slice()).unwrap();
 }

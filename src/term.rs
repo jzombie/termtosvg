@@ -2,15 +2,15 @@ use std::collections::BTreeMap;
 use std::os::unix::io::{BorrowedFd, IntoRawFd, RawFd};
 use std::time::Instant;
 
-use nix::fcntl::{fcntl, FcntlArg, OFlag};
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use nix::libc;
-use nix::poll::{poll, PollFd, PollFlags};
-use nix::pty::{openpty, Winsize};
+use nix::poll::{PollFd, PollFlags, poll};
+use nix::pty::{Winsize, openpty};
 use nix::sys::termios::{self, SetArg, Termios};
 use nix::sys::wait::waitpid;
-use nix::unistd::{close, dup2, execvp, fork, read, write, ForkResult, Pid};
-use vte::{Params, Parser, Perform};
+use nix::unistd::{ForkResult, Pid, execvp, fork, read, write};
 use unicode_width::UnicodeWidthChar;
+use vte::{Params, Parser, Perform};
 
 use crate::anim::CharacterCell;
 use crate::asciicast::{AsciiCastV2Event, AsciiCastV2Header, AsciiCastV2Record};
@@ -42,7 +42,11 @@ impl TerminalMode {
         if let Ok(mut t) = termios::tcgetattr(unsafe { BorrowedFd::borrow_raw(self.fileno) }) {
             self.original_termios = Some(t.clone());
             termios::cfmakeraw(&mut t);
-            let _ = termios::tcsetattr(unsafe { BorrowedFd::borrow_raw(self.fileno) }, SetArg::TCSANOW, &t);
+            let _ = termios::tcsetattr(
+                unsafe { BorrowedFd::borrow_raw(self.fileno) },
+                SetArg::TCSANOW,
+                &t,
+            );
         }
 
         // Save window size
@@ -63,7 +67,11 @@ impl TerminalMode {
 impl Drop for TerminalMode {
     fn drop(&mut self) {
         if let Some(orig) = &self.original_termios {
-            let _ = termios::tcsetattr(unsafe { BorrowedFd::borrow_raw(self.fileno) }, SetArg::TCSANOW, orig);
+            let _ = termios::tcsetattr(
+                unsafe { BorrowedFd::borrow_raw(self.fileno) },
+                SetArg::TCSANOW,
+                orig,
+            );
         }
         if let Some(ws) = &self.original_winsize {
             unsafe {
@@ -76,10 +84,11 @@ impl Drop for TerminalMode {
 pub fn get_terminal_size(fileno: RawFd) -> (u16, u16) {
     unsafe {
         let mut size: libc::winsize = std::mem::zeroed();
-        if libc::ioctl(fileno, libc::TIOCGWINSZ, &mut size) == 0 {
-            if size.ws_col > 0 && size.ws_row > 0 {
-                return (size.ws_col, size.ws_row);
-            }
+        if libc::ioctl(fileno, libc::TIOCGWINSZ, &mut size) == 0
+            && size.ws_col > 0
+            && size.ws_row > 0
+        {
+            return (size.ws_col, size.ws_row);
         }
     }
     (80, 24)
@@ -103,11 +112,13 @@ fn spawn_pty(process_args: &[String], columns: u16, lines: u16) -> nix::Result<(
             let _ = nix::unistd::setsid();
             let _ = unsafe { libc::ioctl(slave_fd, libc::TIOCSCTTY as libc::c_ulong, 0) };
             // Redirect stdio to slave
-            let _ = dup2(slave_fd, libc::STDIN_FILENO);
-            let _ = dup2(slave_fd, libc::STDOUT_FILENO);
-            let _ = dup2(slave_fd, libc::STDERR_FILENO);
-            let _ = close(master_fd);
-            let _ = close(slave_fd);
+            unsafe {
+                libc::dup2(slave_fd, libc::STDIN_FILENO);
+                libc::dup2(slave_fd, libc::STDOUT_FILENO);
+                libc::dup2(slave_fd, libc::STDERR_FILENO);
+                libc::close(master_fd);
+                libc::close(slave_fd);
+            }
 
             if !process_args.is_empty() {
                 let prog = std::ffi::CString::new(process_args[0].as_str()).unwrap();
@@ -120,13 +131,21 @@ fn spawn_pty(process_args: &[String], columns: u16, lines: u16) -> nix::Result<(
             std::process::exit(1);
         }
         ForkResult::Parent { child } => {
-            let _ = close(slave_fd);
+            unsafe {
+                libc::close(slave_fd);
+            }
             Ok((master_fd, child))
         }
     }
 }
 
-pub fn record(process_args: &[String], columns: u16, lines: u16, input_fileno: RawFd, output_fileno: RawFd) -> Vec<AsciiCastV2Record> {
+pub fn record(
+    process_args: &[String],
+    columns: u16,
+    lines: u16,
+    input_fileno: RawFd,
+    output_fileno: RawFd,
+) -> Vec<AsciiCastV2Record> {
     let mut guard = TerminalMode::new(input_fileno);
     guard.enter();
 
@@ -140,31 +159,33 @@ pub fn record(process_args: &[String], columns: u16, lines: u16, input_fileno: R
         Err(_) => return records,
     };
 
-    // Make master non-blocking
-    let _ = fcntl(master_fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK));
-
     let mut start = None;
     let mut running = true;
     let mut buf = [0u8; 1024];
 
-    let input_fd = unsafe { BorrowedFd::borrow_raw(input_fileno) };
-    let master_fd_borrowed = unsafe { BorrowedFd::borrow_raw(master_fd) };
+    {
+        let input_fd = unsafe { BorrowedFd::borrow_raw(input_fileno) };
+        let output_fd = unsafe { BorrowedFd::borrow_raw(output_fileno) };
+        let master_fd_borrowed = unsafe { BorrowedFd::borrow_raw(master_fd) };
 
-    while running {
-        let mut fds = [
-            PollFd::new(&input_fd, PollFlags::POLLIN),
-            PollFd::new(&master_fd_borrowed, PollFlags::POLLIN),
-        ];
+        let _ = fcntl(master_fd_borrowed, FcntlArg::F_SETFL(OFlag::O_NONBLOCK));
 
-        let _ = poll(&mut fds, 100);
+        while running {
+            let mut fds = [
+                PollFd::new(input_fd, PollFlags::POLLIN),
+                PollFd::new(master_fd_borrowed, PollFlags::POLLIN),
+            ];
 
-        // stdin -> pty
-        if let Some(revents) = fds[0].revents() {
-            if revents.contains(PollFlags::POLLIN) {
-                match read(input_fileno, &mut buf) {
+            let _ = poll(&mut fds, 100u16);
+
+            // stdin -> pty
+            if let Some(revents) = fds[0].revents()
+                && revents.contains(PollFlags::POLLIN)
+            {
+                match read(input_fd, &mut buf) {
                     Ok(0) => running = false,
                     Ok(n) => {
-                        let _ = write(master_fd, &buf[..n]);
+                        let _ = write(master_fd_borrowed, &buf[..n]);
                     }
                     Err(err) => {
                         if err != nix::errno::Errno::EAGAIN {
@@ -173,21 +194,27 @@ pub fn record(process_args: &[String], columns: u16, lines: u16, input_fileno: R
                     }
                 }
             }
-        }
 
-        // pty -> stdout + records
-        if let Some(revents) = fds[1].revents() {
-            if revents.contains(PollFlags::POLLIN) {
-                match read(master_fd, &mut buf) {
+            // pty -> stdout + records
+            if let Some(revents) = fds[1].revents()
+                && revents.contains(PollFlags::POLLIN)
+            {
+                match read(master_fd_borrowed, &mut buf) {
                     Ok(0) => running = false,
                     Ok(n) => {
                         let now = Instant::now();
                         if start.is_none() {
                             start = Some(now);
                         }
-                        let elapsed = start.map(|s| now.duration_since(s).as_secs_f64()).unwrap_or(0.0);
-                        let text = String::from_utf8_lossy(&buf[..n]).to_string();
-                        let _ = write(output_fileno, &buf[..n]);
+                        let elapsed = start
+                            .map(|s| now.duration_since(s).as_secs_f64())
+                            .unwrap_or(0.0);
+                        let _ = write(output_fd, &buf[..n]);
+                        let text_raw = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let text = strip_prompt_markers(&text_raw);
+                        if text.is_empty() {
+                            continue;
+                        }
                         records.push(AsciiCastV2Record::Event(
                             AsciiCastV2Event::new(elapsed, "o", &text, None).expect("event"),
                         ));
@@ -202,9 +229,223 @@ pub fn record(process_args: &[String], columns: u16, lines: u16, input_fileno: R
         }
     }
 
-    let _ = close(master_fd);
+    unsafe {
+        libc::close(master_fd);
+    }
     let _ = waitpid(child_pid, None);
     records
+}
+
+fn strip_prompt_markers(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut modified = false;
+    let mut remainder = text;
+    while let Some(pos) = remainder.find('\n') {
+        let (line, rest) = remainder.split_at(pos + 1);
+        if is_marker_line(line) {
+            modified = true;
+        } else {
+            result.push_str(line);
+        }
+        remainder = rest;
+    }
+    if !remainder.is_empty() {
+        if is_marker_line(remainder) {
+            modified = true;
+        } else {
+            result.push_str(remainder);
+        }
+    }
+    if modified { result } else { text.to_string() }
+}
+
+fn is_marker_line(line: &str) -> bool {
+    let cleaned = strip_ansi_sequences(line);
+    let trimmed = cleaned.trim_matches(|c: char| c.is_whitespace() || c == '\r' || c == '\n');
+    trimmed == "%"
+}
+
+fn strip_ansi_sequences(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            0x1b => {
+                i += 1;
+                if i >= bytes.len() {
+                    break;
+                }
+                match bytes[i] as char {
+                    '[' => {
+                        i += 1;
+                        while i < bytes.len() {
+                            let ch = bytes[i] as char;
+                            i += 1;
+                            if ('@'..='~').contains(&ch) {
+                                break;
+                            }
+                        }
+                    }
+                    ']' => {
+                        i += 1;
+                        while i < bytes.len() {
+                            let ch = bytes[i] as char;
+                            i += 1;
+                            if ch == '\u{0007}' {
+                                break;
+                            }
+                            if ch == '\u{001b}' && i < bytes.len() && bytes[i] as char == '\\' {
+                                i += 1;
+                                break;
+                            }
+                        }
+                    }
+                    '(' | ')' | '*' | '+' | '-' | '.' | '/' => {
+                        i += 1; // consume designator character
+                    }
+                    _ => {}
+                }
+            }
+            byte => {
+                result.push(byte as char);
+                i += 1;
+            }
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::{is_marker_line, strip_ansi_sequences, strip_prompt_markers};
+
+    #[test]
+    fn removes_standalone_percent_line() {
+        let input = "%\r\nuser@host %";
+        let output = strip_prompt_markers(input);
+        assert_eq!(output, "user@host %");
+    }
+
+    #[test]
+    fn preserves_non_marker_percent() {
+        let input = "% complete\n";
+        let output = strip_prompt_markers(input);
+        assert_eq!(output, "% complete\n");
+    }
+
+    #[test]
+    fn removes_only_marker_chunk_with_spaces() {
+        let input = "%    \r";
+        let output = strip_prompt_markers(input);
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn removes_marker_with_ansi_sequences() {
+        let input = "\x1b[0m%\x1b[0m\r\nreal prompt\n";
+        let output = strip_prompt_markers(input);
+        assert_eq!(output, "real prompt\n");
+    }
+
+    #[test]
+    fn strip_ansi_sequences_removes_control_codes() {
+        let cleaned = strip_ansi_sequences("\x1b[31mred\x1b[0m");
+        assert_eq!(cleaned, "red");
+    }
+
+    #[test]
+    fn marker_detection_ignores_whitespace_and_ansi() {
+        assert!(is_marker_line("  \x1b[0m%\x1b[0m  \r"));
+    }
+}
+
+#[cfg(test)]
+mod terminal_emulator_tests {
+    use super::TerminalEmulator;
+    use vte::Parser;
+
+    #[test]
+    fn clear_line_from_cursor_extends_inverse_background() {
+        let mut term = TerminalEmulator::new(4, 1);
+        term.attr.inverse = true;
+        term.clear_line_from_cursor();
+        assert!(term.cells[0].iter().all(|cell| {
+            cell.as_ref()
+                .map(|c| c.background_color.as_str() == "foreground")
+                .unwrap_or(false)
+        }));
+    }
+
+    #[test]
+    fn clear_line_from_cursor_leaves_none_for_default_background() {
+        let mut term = TerminalEmulator::new(4, 1);
+        term.clear_line_from_cursor();
+        assert!(term.cells[0].iter().all(|cell| cell.is_none()));
+    }
+
+    #[test]
+    fn clear_screen_applies_active_background() {
+        let mut term = TerminalEmulator::new(2, 2);
+        term.attr.set_bg_palette(2, false);
+        term.clear_screen();
+        assert!(term.cells.iter().flatten().all(|cell| {
+            cell.as_ref()
+                .map(|c| c.background_color.as_str() == "color2")
+                .unwrap_or(false)
+        }));
+    }
+
+    #[test]
+    fn delete_chars_leaves_background_color() {
+        let mut term = TerminalEmulator::new(4, 1);
+        term.attr.set_bg_palette(2, false);
+        for ch in ['a', 'b', 'c', 'd'] {
+            term.put_char(ch);
+        }
+        term.set_cursor(0, 0);
+        term.delete_chars(2);
+        assert!(term.cells[0].iter().skip(2).all(|cell| {
+            cell.as_ref()
+                .map(|c| c.background_color.as_str() == "color2")
+                .unwrap_or(false)
+        }));
+    }
+
+    #[test]
+    fn sgr_background_colors_are_recorded() {
+        let mut term = TerminalEmulator::new(4, 1);
+        term.attr.set_sgr(&[42]);
+        term.put_char('a');
+        assert_eq!(
+            term.cells[0][0]
+                .as_ref()
+                .map(|c| c.background_color.as_str()),
+            Some("color2")
+        );
+    }
+
+    #[test]
+    fn parser_applies_background_sgr_sequences() {
+        let mut term = TerminalEmulator::new(4, 1);
+        let mut parser = Parser::new();
+        parser.advance(&mut term, b"\x1b[30m\x1b[42mX");
+        assert_eq!(
+            term.cells[0][0]
+                .as_ref()
+                .map(|c| c.background_color.as_str()),
+            Some("color2")
+        );
+    }
+
+    #[test]
+    fn parser_moves_to_absolute_row_with_csi_d() {
+        let mut term = TerminalEmulator::new(4, 3);
+        let mut parser = Parser::new();
+        parser.advance(&mut term, b"\x1b[3dX");
+        assert!(term.cells[2][0].as_ref().is_some());
+        assert!(term.cells[0][0].is_none());
+    }
 }
 
 pub fn _group_by_time(
@@ -226,11 +467,11 @@ pub fn _group_by_time(
         let time_between_events = event_record.time - (current_time + dropped_time);
         if time_between_events * 1000.0 >= min_rec_duration as f64 {
             let mut duration = time_between_events;
-            if let Some(max_rec) = max_rec_duration {
-                if duration > max_rec {
-                    dropped_time += duration - max_rec;
-                    duration = max_rec;
-                }
+            if let Some(max_rec) = max_rec_duration
+                && duration > max_rec
+            {
+                dropped_time += duration - max_rec;
+                duration = max_rec;
             }
             grouped.push(
                 AsciiCastV2Event::new(current_time, "o", &current_string, Some(duration))
@@ -258,6 +499,11 @@ pub fn _group_by_time(
 struct CellAttributes {
     fg: String,
     bg: String,
+    fg_palette: Option<u8>,
+    fg_is_bright: bool,
+    fg_bright_from_bold: bool,
+    bg_palette: Option<u8>,
+    bg_is_bright: bool,
     bold: bool,
     italics: bool,
     underline: bool,
@@ -270,6 +516,11 @@ impl CellAttributes {
         CellAttributes {
             fg: "foreground".into(),
             bg: "background".into(),
+            fg_palette: None,
+            fg_is_bright: false,
+            fg_bright_from_bold: false,
+            bg_palette: None,
+            bg_is_bright: false,
             bold: false,
             italics: false,
             underline: false,
@@ -282,32 +533,161 @@ impl CellAttributes {
         *self = CellAttributes::default();
     }
 
+    fn set_fg_palette(&mut self, idx: u8, bright: bool) {
+        let base = idx.min(7);
+        self.fg_palette = Some(base);
+        self.fg_is_bright = bright;
+        self.fg_bright_from_bold = false;
+        self.update_fg_class();
+        self.apply_bold_intensity();
+    }
+
+    fn set_bg_palette(&mut self, idx: u8, bright: bool) {
+        let base = idx.min(7);
+        self.bg_palette = Some(base);
+        self.bg_is_bright = bright;
+        let class_idx = base + if bright { 8 } else { 0 };
+        self.bg = format!("color{}", class_idx);
+    }
+
+    fn set_fg_default(&mut self) {
+        self.fg_palette = None;
+        self.fg_is_bright = false;
+        self.fg_bright_from_bold = false;
+        self.fg = "foreground".into();
+    }
+
+    fn set_bg_default(&mut self) {
+        self.bg_palette = None;
+        self.bg_is_bright = false;
+        self.bg = "background".into();
+    }
+
+    fn set_fg_custom<S: Into<String>>(&mut self, css: S) {
+        self.fg_palette = None;
+        self.fg_is_bright = false;
+        self.fg_bright_from_bold = false;
+        self.fg = css.into();
+    }
+
+    fn set_bg_custom<S: Into<String>>(&mut self, css: S) {
+        self.bg_palette = None;
+        self.bg_is_bright = false;
+        self.bg = css.into();
+    }
+
+    fn update_fg_class(&mut self) {
+        if let Some(idx) = self.fg_palette {
+            let class_idx = idx + if self.fg_is_bright { 8 } else { 0 };
+            self.fg = format!("color{}", class_idx);
+        }
+    }
+
+    fn apply_bold_intensity(&mut self) {
+        if let Some(_idx) = self.fg_palette {
+            if self.bold && !self.fg_is_bright {
+                self.fg_is_bright = true;
+                self.fg_bright_from_bold = true;
+                self.update_fg_class();
+            } else if !self.bold && self.fg_bright_from_bold {
+                self.fg_is_bright = false;
+                self.fg_bright_from_bold = false;
+                self.update_fg_class();
+            }
+        }
+    }
+
     fn set_sgr(&mut self, params: &[i64]) {
         if params.is_empty() {
             self.reset();
             return;
         }
-        for &p in params {
-            match p {
+
+        let mut i = 0;
+        while i < params.len() {
+            match params[i] {
                 0 => self.reset(),
-                1 => self.bold = true,
+                1 => {
+                    self.bold = true;
+                    self.apply_bold_intensity();
+                }
                 3 => self.italics = true,
                 4 => self.underline = true,
                 7 => self.inverse = true,
                 9 => self.strikethrough = true,
-                22 => self.bold = false,
+                22 => {
+                    self.bold = false;
+                    self.apply_bold_intensity();
+                }
                 23 => self.italics = false,
                 24 => self.underline = false,
                 27 => self.inverse = false,
                 29 => self.strikethrough = false,
-                30..=37 => self.fg = ansi_color((p - 30) as u8, false),
-                90..=97 => self.fg = ansi_color((p - 90) as u8, true),
-                39 => self.fg = "foreground".into(),
-                40..=47 => self.bg = ansi_color((p - 40) as u8, false),
-                100..=107 => self.bg = ansi_color((p - 100) as u8, true),
-                49 => self.bg = "background".into(),
+                30..=37 => self.set_fg_palette((params[i] - 30) as u8, false),
+                90..=97 => self.set_fg_palette((params[i] - 90) as u8, true),
+                39 => self.set_fg_default(),
+                40..=47 => self.set_bg_palette((params[i] - 40) as u8, false),
+                100..=107 => self.set_bg_palette((params[i] - 100) as u8, true),
+                49 => self.set_bg_default(),
+                38 => {
+                    if let Some(mode) = params.get(i + 1) {
+                        match *mode {
+                            5 => {
+                                if let Some(idx) = params.get(i + 2) {
+                                    let idx_val = *idx;
+                                    if idx_val < 16 {
+                                        let palette_idx = (idx_val as u8) % 8;
+                                        let bright = idx_val >= 8;
+                                        self.set_fg_palette(palette_idx, bright);
+                                    } else {
+                                        self.set_fg_custom(color_from_256(idx_val));
+                                    }
+                                    i += 2;
+                                }
+                            }
+                            2 => {
+                                if let (Some(r), Some(g), Some(b)) =
+                                    (params.get(i + 2), params.get(i + 3), params.get(i + 4))
+                                {
+                                    self.set_fg_custom(rgb_color(*r, *g, *b));
+                                    i += 4;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                48 => {
+                    if let Some(mode) = params.get(i + 1) {
+                        match *mode {
+                            5 => {
+                                if let Some(idx) = params.get(i + 2) {
+                                    let idx_val = *idx;
+                                    if idx_val < 16 {
+                                        let palette_idx = (idx_val as u8) % 8;
+                                        let bright = idx_val >= 8;
+                                        self.set_bg_palette(palette_idx, bright);
+                                    } else {
+                                        self.set_bg_custom(color_from_256(idx_val));
+                                    }
+                                    i += 2;
+                                }
+                            }
+                            2 => {
+                                if let (Some(r), Some(g), Some(b)) =
+                                    (params.get(i + 2), params.get(i + 3), params.get(i + 4))
+                                {
+                                    self.set_bg_custom(rgb_color(*r, *g, *b));
+                                    i += 4;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 _ => {}
             }
+            i += 1;
         }
     }
 
@@ -320,29 +700,35 @@ impl CellAttributes {
     }
 }
 
-fn ansi_color(idx: u8, bright: bool) -> String {
-    // Basic ANSI palette
-    const BASE: [(u8, u8, u8); 8] = [
-        (0x00, 0x00, 0x00), // black
-        (0xcd, 0x00, 0x00), // red
-        (0x00, 0xcd, 0x00), // green
-        (0xcd, 0xcd, 0x00), // yellow
-        (0x00, 0x00, 0xee), // blue
-        (0xcd, 0x00, 0xcd), // magenta
-        (0x00, 0xcd, 0xcd), // cyan
-        (0xe5, 0xe5, 0xe5), // white
-    ];
-    let (r, g, b) = BASE[(idx as usize).min(7)];
-    let (r, g, b) = if bright {
-        (
-            (r as u16 + 0x33).min(0xff) as u8,
-            (g as u16 + 0x33).min(0xff) as u8,
-            (b as u16 + 0x33).min(0xff) as u8,
-        )
-    } else {
-        (r, g, b)
-    };
-    format!("#{:02x}{:02x}{:02x}", r, g, b)
+fn ansi_color_class(idx: u8, bright: bool) -> String {
+    let base = idx.min(7);
+    let color_idx = if bright { base + 8 } else { base };
+    format!("color{}", color_idx)
+}
+
+fn color_from_256(idx: i64) -> String {
+    let idx = idx.clamp(0, 255) as u8;
+    match idx {
+        0..=15 => ansi_color_class(idx.min(7), idx >= 8),
+        16..=231 => {
+            let c = idx - 16;
+            let r = c / 36;
+            let g = (c / 6) % 6;
+            let b = c % 6;
+            let comp = |v: u8| if v == 0 { 0 } else { 55 + 40 * v };
+            format!("#{:02x}{:02x}{:02x}", comp(r), comp(g), comp(b))
+        }
+        232..=255 => {
+            let level = 8 + 10 * (idx - 232);
+            let v = level;
+            format!("#{:02x}{:02x}{:02x}", v, v, v)
+        }
+    }
+}
+
+fn rgb_color(r: i64, g: i64, b: i64) -> String {
+    let clamp = |v: i64| -> u8 { v.clamp(0, 255) as u8 };
+    format!("#{:02x}{:02x}{:02x}", clamp(r), clamp(g), clamp(b))
 }
 
 struct TerminalEmulator {
@@ -365,6 +751,36 @@ impl TerminalEmulator {
             saved_cursor: None,
             cells: vec![vec![None; width]; height],
             attr: CellAttributes::default(),
+        }
+    }
+
+    fn blank_cell_for_attrs(&self) -> Option<CharacterCell> {
+        let (fg, bg) = self.attr.effective_colors();
+        if bg == "background" {
+            return None;
+        }
+        let mut cell = CharacterCell::new(" ");
+        cell.color = fg;
+        cell.background_color = bg;
+        cell.bold = self.attr.bold;
+        cell.italics = self.attr.italics;
+        cell.underscore = self.attr.underline;
+        cell.strikethrough = self.attr.strikethrough;
+        Some(cell)
+    }
+
+    fn fill_slice(slice: &mut [Option<CharacterCell>], fill: Option<&CharacterCell>) {
+        match fill {
+            Some(blank) => {
+                for cell in slice.iter_mut() {
+                    *cell = Some(blank.clone());
+                }
+            }
+            None => {
+                for cell in slice.iter_mut() {
+                    *cell = None;
+                }
+            }
         }
     }
 
@@ -392,46 +808,128 @@ impl TerminalEmulator {
     }
 
     fn clear_screen(&mut self) {
+        let fill = self.blank_cell_for_attrs();
+        let fill_ref = fill.as_ref();
         for row in &mut self.cells {
-            for cell in row.iter_mut() {
-                *cell = None;
-            }
+            Self::fill_slice(row, fill_ref);
         }
         self.set_cursor(0, 0);
     }
 
     fn clear_to_screen_end(&mut self) {
-        self.clear_line_from_cursor();
+        if self.cursor_row >= self.height {
+            return;
+        }
+        let fill = self.blank_cell_for_attrs();
+        let fill_ref = fill.as_ref();
+        let current_row = &mut self.cells[self.cursor_row][self.cursor_col..];
+        Self::fill_slice(current_row, fill_ref);
         for r in (self.cursor_row + 1)..self.height {
-            for cell in self.cells[r].iter_mut() {
-                *cell = None;
-            }
+            Self::fill_slice(&mut self.cells[r], fill_ref);
         }
     }
 
     fn clear_line_from_cursor(&mut self) {
         if self.cursor_row < self.height {
-            for cell in self.cells[self.cursor_row].iter_mut().skip(self.cursor_col) {
-                *cell = None;
-            }
+            let fill = self.blank_cell_for_attrs();
+            let fill_ref = fill.as_ref();
+            let slice = &mut self.cells[self.cursor_row][self.cursor_col..];
+            Self::fill_slice(slice, fill_ref);
         }
     }
 
     fn clear_line(&mut self) {
         if self.cursor_row < self.height {
-            for cell in self.cells[self.cursor_row].iter_mut() {
-                *cell = None;
-            }
+            let fill = self.blank_cell_for_attrs();
+            let fill_ref = fill.as_ref();
+            let row = &mut self.cells[self.cursor_row];
+            Self::fill_slice(row, fill_ref);
         }
     }
 
     fn scroll_up(&mut self, rows: usize) {
         let rows = rows.min(self.height);
+        let fill = self.blank_cell_for_attrs();
+        let fill_ref = fill.as_ref();
         for _ in 0..rows {
             self.cells.remove(0);
-            self.cells.push(vec![None; self.width]);
+            let mut new_row = vec![None; self.width];
+            Self::fill_slice(&mut new_row, fill_ref);
+            self.cells.push(new_row);
         }
         self.cursor_row = self.height.saturating_sub(1);
+    }
+
+    fn insert_blank_chars(&mut self, count: usize) {
+        if self.cursor_row >= self.height || self.cursor_col >= self.width {
+            return;
+        }
+        let available = self.width - self.cursor_col;
+        if available == 0 {
+            return;
+        }
+        let count = count.min(available);
+        if count == 0 {
+            return;
+        }
+        let fill = self.blank_cell_for_attrs();
+        let fill_ref = fill.as_ref();
+        let row = &mut self.cells[self.cursor_row];
+        for offset in (0..(available - count)).rev() {
+            let src = self.cursor_col + offset;
+            let dst = src + count;
+            let value = row.get(src).cloned().unwrap_or(None);
+            row[dst] = value;
+        }
+        let start = self.cursor_col;
+        let end = self.cursor_col + count;
+        Self::fill_slice(&mut row[start..end], fill_ref);
+    }
+
+    fn delete_chars(&mut self, count: usize) {
+        if self.cursor_row >= self.height || self.cursor_col >= self.width {
+            return;
+        }
+        let available = self.width - self.cursor_col;
+        if available == 0 {
+            return;
+        }
+        let count = count.min(available);
+        if count == 0 {
+            return;
+        }
+        let fill = self.blank_cell_for_attrs();
+        let fill_ref = fill.as_ref();
+        let row = &mut self.cells[self.cursor_row];
+        for offset in 0..available {
+            let dest = self.cursor_col + offset;
+            let src = dest + count;
+            let mut value = row.get(src).cloned().unwrap_or(None);
+            if value.is_none() {
+                value = fill_ref.cloned();
+            }
+            row[dest] = value;
+        }
+    }
+
+    fn erase_chars(&mut self, count: usize) {
+        if self.cursor_row >= self.height || self.cursor_col >= self.width {
+            return;
+        }
+        let available = self.width - self.cursor_col;
+        if available == 0 {
+            return;
+        }
+        let count = count.min(available);
+        if count == 0 {
+            return;
+        }
+        let fill = self.blank_cell_for_attrs();
+        let fill_ref = fill.as_ref();
+        let row = &mut self.cells[self.cursor_row];
+        let start = self.cursor_col;
+        let end = self.cursor_col + count;
+        Self::fill_slice(&mut row[start..end], fill_ref);
     }
 
     fn put_char(&mut self, ch: char) {
@@ -463,9 +961,10 @@ impl TerminalEmulator {
             self.cells[self.cursor_row][self.cursor_col] = Some(cell);
         }
 
-        self.cursor_col = (self.cursor_col + width).min(self.width);
+        self.cursor_col += width;
         if self.cursor_col >= self.width {
-            self.cursor_col = self.width.saturating_sub(1);
+            self.linefeed();
+            self.cursor_col = 0;
         }
     }
 
@@ -531,7 +1030,13 @@ impl Perform for TerminalEmulator {
         }
     }
 
-    fn csi_dispatch(&mut self, params: &Params, _intermediates: &[u8], _ignore: bool, action: char) {
+    fn csi_dispatch(
+        &mut self,
+        params: &Params,
+        _intermediates: &[u8],
+        _ignore: bool,
+        action: char,
+    ) {
         let p = |idx: usize, default: i64| {
             params
                 .iter()
@@ -541,6 +1046,10 @@ impl Perform for TerminalEmulator {
                 .unwrap_or(default)
         };
         match action {
+            '@' => {
+                let count = p(0, 1).max(1) as usize;
+                self.insert_blank_chars(count);
+            }
             'A' => self.move_up(p(0, 1) as usize),
             'B' => self.move_down(p(0, 1) as usize),
             'C' => self.move_right(p(0, 1) as usize),
@@ -562,6 +1071,10 @@ impl Perform for TerminalEmulator {
                 let col = p(1, 1).saturating_sub(1) as usize;
                 self.set_cursor(row, col);
             }
+            'd' => {
+                let row = p(0, 1).saturating_sub(1) as usize;
+                self.set_cursor(row, self.cursor_col);
+            }
             'J' => match p(0, 0) {
                 0 => self.clear_to_screen_end(),
                 2 => self.clear_screen(),
@@ -572,6 +1085,10 @@ impl Perform for TerminalEmulator {
                 2 => self.clear_line(),
                 _ => {}
             },
+            'P' => {
+                let count = p(0, 1).max(1) as usize;
+                self.delete_chars(count);
+            }
             'm' => {
                 let vals: Vec<i64> = params
                     .iter()
@@ -585,17 +1102,18 @@ impl Perform for TerminalEmulator {
                     self.set_cursor(r, c);
                 }
             }
+            'X' => {
+                let count = p(0, 1).max(1) as usize;
+                self.erase_chars(count);
+            }
             _ => {}
         }
     }
 
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
-        match byte {
-            b'c' => {
-                self.clear_screen();
-                self.attr.reset();
-            }
-            _ => {}
+        if byte == b'c' {
+            self.clear_screen();
+            self.attr.reset();
         }
     }
 }
@@ -632,9 +1150,7 @@ pub fn timed_frames(
     let mut parser = Parser::new();
 
     let frames_iter = grouped_events.into_iter().map(move |event| {
-        for byte in event.event_data.as_bytes() {
-            parser.advance(&mut term, *byte);
-        }
+        parser.advance(&mut term, event.event_data.as_bytes());
         TimedFrame {
             time: (event.time * 1000.0) as u64,
             duration: (event.duration.unwrap_or(0.0) * 1000.0) as u64,
