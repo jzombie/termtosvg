@@ -1,4 +1,4 @@
-![Example](./termtosvg.svg)
+![Example](./termtosvg_1.svg)
 
 # termtosvg (Rust port)
 
