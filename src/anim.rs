@@ -5,9 +5,9 @@ use std::path::Path;
 use std::str;
 
 use anyhow::{Result, anyhow};
-use roxmltree::Document;
 use indexmap::IndexMap;
 use once_cell::sync::Lazy;
+use roxmltree::Document;
 use unicode_width::UnicodeWidthStr;
 use xmltree::{Element, EmitterConfig, XMLNode};
 
@@ -866,10 +866,8 @@ pub fn validate_svg<T: AsRef<[u8]>>(svg_data: T) -> Result<()> {
 }
 
 fn validate_svg_bytes(bytes: &[u8]) -> Result<()> {
-    let svg_text = str::from_utf8(bytes)
-        .map_err(|err| anyhow!("SVG output is not valid UTF-8: {err}"))?;
-    Document::parse(svg_text)
-        .map_err(|err| anyhow!("Invalid SVG emitted: {err}"))?;
+    let svg_text =
+        str::from_utf8(bytes).map_err(|err| anyhow!("SVG output is not valid UTF-8: {err}"))?;
+    Document::parse(svg_text).map_err(|err| anyhow!("Invalid SVG emitted: {err}"))?;
     Ok(())
 }
-

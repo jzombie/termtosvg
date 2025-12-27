@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use include_dir::{Dir, include_dir};
 
-static TEMPLATES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/old.python/termtosvg/data/templates");
+// Vendored templates are embedded directly in the crate to avoid relying on
+// an external `old.python` checkout at build time.
+static TEMPLATES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/data/templates");
 
 pub const DEFAULT_TEMPLATES_NAMES: &[&str] = &[
     "base16_default_dark.svg",

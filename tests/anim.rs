@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use termtosvg::anim;
 use termtosvg::anim::CharacterCell;
 use termtosvg::term::TimedFrame;
+use termtosvg::config::default_templates;
 
 fn cell(text: &str, fg: &str, bg: &str) -> CharacterCell {
     CharacterCell::with_colors(text, fg, bg)
@@ -44,8 +45,9 @@ fn render_animation_and_validate() {
         buffer: BTreeMap::new(),
     }];
     let output = tempfile::NamedTempFile::new().unwrap();
-    const TEMPLATE: &[u8] = include_bytes!("../old.python/termtosvg/data/templates/powershell.svg");
-    anim::render_animation(frames.clone(), (80, 24), output.path(), TEMPLATE).unwrap();
+    let templates = default_templates();
+    let tpl = templates.get("powershell").expect("missing embedded template");
+    anim::render_animation(frames.clone(), (80, 24), output.path(), tpl.as_slice()).unwrap();
     let bytes = std::fs::read(output.path()).unwrap();
     anim::validate_svg(bytes.as_slice()).unwrap();
 }

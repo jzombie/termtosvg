@@ -9,7 +9,7 @@ use termtosvg::config::DEFAULT_TEMPLATES_NAMES;
 use xmltree::{Element, XMLNode};
 
 const PYTHON_NAMESPACE: &str = "https://github.com/nbedos/termtosvg";
-const TEMPLATE_ROOT: &str = "old.python/termtosvg/data/templates";
+const TEMPLATE_ROOT: &str = "data/templates";
 
 #[test]
 #[ignore = "requires Python reference renderer"]
@@ -182,9 +182,8 @@ fn canonicalize_node(node: &XMLNode) -> Option<CanonNode> {
 
 fn assert_valid_svg(path: &Path) -> Result<(), Box<dyn Error>> {
     let xml = std::fs::read_to_string(path)?;
-    roxmltree::Document::parse(&xml)
-        .map_err(|err| -> Box<dyn Error> {
-            format!("Invalid SVG emitted at {}: {err}", path.display()).into()
-        })?;
+    roxmltree::Document::parse(&xml).map_err(|err| -> Box<dyn Error> {
+        format!("Invalid SVG emitted at {}: {err}", path.display()).into()
+    })?;
     Ok(())
 }

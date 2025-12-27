@@ -90,7 +90,7 @@ fn render_honors_namespace_override() {
     let cast = sample_cast_file();
     let output_dir = tempdir().unwrap();
     let svg_path = output_dir.path().join("override.svg");
-    let template = "old.python/termtosvg/data/templates/powershell.svg";
+    let template = "data/templates/powershell.svg";
     let namespace = "https://example.com/custom-termtosvg";
 
     Command::new(assert_cmd::cargo::cargo_bin!("termtosvg"))
