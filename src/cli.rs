@@ -3,7 +3,7 @@ use std::io::Write;
 use std::os::unix::io::RawFd;
 
 use anyhow::Result;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, FromArgMatches, CommandFactory, Command};
 use rand::{Rng, distr::Alphanumeric};
 use tempfile::NamedTempFile;
 
@@ -132,7 +132,23 @@ pub fn integral_duration_validation(value: &str) -> Result<u64, String> {
 }
 
 pub fn run(args: Vec<String>, input_fileno: RawFd, output_fileno: RawFd) -> Result<()> {
-    let cli = Cli::parse_from(args);
+    // Integrate template names into clap's help output by rewriting the
+    // `template` argument help text before parsing CLI arguments.
+    let templates = config::default_templates();
+    let mut names: Vec<&str> = templates.keys().map(|s| s.as_str()).collect();
+    names.sort();
+    let template_help = format!(
+        "Template name or path. Built-in templates: {}",
+        names.join(", ")
+    );
+    let template_help: &'static str = Box::leak(template_help.into_boxed_str());
+
+    let mut cmd = Cli::command();
+    cmd = annotate_template_help(cmd, template_help);
+    let matches = cmd
+        .try_get_matches_from(&args)
+        .map_err(|e: clap::Error| anyhow::anyhow!(e.to_string()))?;
+    let cli = Cli::from_arg_matches(&matches).map_err(|e: clap::Error| anyhow::anyhow!(e.to_string()))?;
     let templates = config::default_templates();
     let default_template = "powershell".to_string();
     match &cli.command {
@@ -340,4 +356,25 @@ fn temp_still_dir() -> Result<String> {
 
 fn default_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "sh".into())
+}
+
+fn annotate_template_help(mut command: Command, help: &'static str) -> Command {
+    let has_template_arg = command
+        .get_arguments()
+        .any(|arg| arg.get_id() == "template");
+    if has_template_arg {
+        command = command.mut_arg("template", |arg| arg.help(help).long_help(help));
+    }
+
+    let sub_names: Vec<String> = command
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_string())
+        .collect();
+    for name in sub_names {
+        if let Some(sub) = command.find_subcommand_mut(&name) {
+            let sub_owned = std::mem::take(sub);
+            *sub = annotate_template_help(sub_owned, help);
+        }
+    }
+    command
 }
