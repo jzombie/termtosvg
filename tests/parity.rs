@@ -31,7 +31,7 @@ fn compare_against_python(templates: &[&str]) -> Result<(), Box<dyn Error>> {
     let template_root = Path::new(TEMPLATE_ROOT);
     let temp_dir = tempdir()?;
     let cast_path = temp_dir.path().join("parity.cast");
-    std::fs::write(&cast_path, include_str!("../samples.cast"))?;
+    std::fs::write(&cast_path, include_str!("data/prompt_longline.cast"))?;
     let cast_str = cast_path.to_string_lossy().to_string();
 
     for template_name in templates {

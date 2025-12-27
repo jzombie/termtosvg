@@ -25,13 +25,13 @@ cargo run -- --output demo.svg
 Record only, keeping the asciicast for later:
 
 ```sh
-cargo run -- record --output demo.cast
+cargo run -- record --output prompt_longline.cast
 ```
 
 Render an existing asciicast with a specific template and still frame mode:
 
 ```sh
-cargo run -- render demo.cast --template window_frame --still-frames --output window_frame.svg
+cargo run -- render tests/data/prompt_longline.cast --template window_frame --still-frames --output window_frame.svg
 ```
 
 Pipe any command into `termtosvg` and it will render the incoming text (ANSI
@@ -44,7 +44,7 @@ neofetch | cargo run -- --screen-geometry 82x24 --output neofetch.svg
 To render an asciicast streamed on stdin, pass `-` as the input file:
 
 ```sh
-cat demo.cast | cargo run -- render - --output piped.svg
+cat tests/data/prompt_longline.cast | cargo run -- render - --output piped.svg
 ```
 
 ### Rendering from stdin (examples)
@@ -53,10 +53,10 @@ You can render asciicast data streamed on stdin using the `render -` form:
 
 ```sh
 # render an asciicast file piped to stdin
-cat demo.cast | cargo run -- render - --output piped.svg
+cat tests/data/prompt_longline.cast | cargo run -- render - --output piped.svg
 
 # or with an installed binary
-cat demo.cast | termtosvg render - -o piped.svg
+cat tests/data/prompt_longline.cast | termtosvg render - -o piped.svg
 ```
 
 If you pipe raw terminal output (not an asciicast) into the program without
@@ -73,7 +73,7 @@ invocation, use `/dev/stdin` as the input filename for compatibility with the
 original Python implementation:
 
 ```sh
-cat demo.cast | termtosvg render /dev/stdin -o piped.svg
+cat tests/data/prompt_longline.cast | termtosvg render /dev/stdin -o piped.svg
 ```
 
 `--template` accepts either a built-in template name (no `.svg` extension) or a
@@ -109,13 +109,13 @@ supported by the Rust renderer.
 ### Using a built-in template by name
 
 ```sh
-cargo run -- render demo.cast --template solarized_dark --output demo-solarized.svg
+cargo run -- render tests/data/prompt_longline.cast --template solarized_dark --output prompt_longline-solarized.svg
 ```
 
 ### Using a template from disk
 
 ```sh
-cargo run -- render demo.cast --template ./old.python/termtosvg/data/templates/window_frame.svg --output window-frame.svg
+cargo run -- render tests/data/prompt_longline.cast --template ./old.python/termtosvg/data/templates/window_frame.svg --output window-frame.svg
 ```
 
 ### Customizing a template

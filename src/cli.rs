@@ -34,11 +34,11 @@ pub const DEFAULT_LOOP_DELAY: u64 = 1000;
 
                 Examples:
 
-                    # Render a cast file on disk
-                    termtosvg render demo.cast -o out.svg
+                      # Render a cast file on disk
+                      termtosvg render tests/data/prompt_longline.cast -o out.svg
 
-                    # Render an asciicast streamed to stdin
-                    cat demo.cast | termtosvg render - -o piped.svg
+                      # Render an asciicast streamed to stdin
+                      cat tests/data/prompt_longline.cast | termtosvg render - -o piped.svg
 
                     # Pipe raw terminal output (ANSI sequences preserved) to the default mode
                     neofetch | termtosvg -g 82x24 -o neofetch.svg
