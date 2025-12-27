@@ -51,7 +51,10 @@ jobs:
           if [ -d old.python ]; then
             rm -rf old.python
           fi
-          git clone https://github.com/jzombie/termtosvg old.python
+          # Clone the user's Python reference branch (contains setup.py)
+          # Upstream is https://github.com/nbedos/termtosvg and this still assumes the upstream
+          # will never be updated.
+          git clone --branch orig-python --single-branch https://github.com/jzombie/termtosvg old.python
           python -m venv .venv
           source .venv/bin/activate
           python -m pip install --upgrade pip
