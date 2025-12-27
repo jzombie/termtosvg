@@ -362,6 +362,100 @@ mod prompt_tests {
     }
 }
 
+#[cfg(test)]
+mod terminal_emulator_tests {
+    use super::TerminalEmulator;
+    use vte::Parser;
+
+    #[test]
+    fn clear_line_from_cursor_extends_inverse_background() {
+        let mut term = TerminalEmulator::new(4, 1);
+        term.attr.inverse = true;
+        term.clear_line_from_cursor();
+        assert!(term.cells[0]
+            .iter()
+            .all(|cell| cell
+                .as_ref()
+                .map(|c| c.background_color.as_str() == "foreground")
+                .unwrap_or(false)));
+    }
+
+    #[test]
+    fn clear_line_from_cursor_leaves_none_for_default_background() {
+        let mut term = TerminalEmulator::new(4, 1);
+        term.clear_line_from_cursor();
+        assert!(term.cells[0].iter().all(|cell| cell.is_none()));
+    }
+
+    #[test]
+    fn clear_screen_applies_active_background() {
+        let mut term = TerminalEmulator::new(2, 2);
+        term.attr.set_bg_palette(2, false);
+        term.clear_screen();
+        assert!(term
+            .cells
+            .iter()
+            .flatten()
+            .all(|cell| cell
+                .as_ref()
+                .map(|c| c.background_color.as_str() == "color2")
+                .unwrap_or(false)));
+    }
+
+    #[test]
+    fn delete_chars_leaves_background_color() {
+        let mut term = TerminalEmulator::new(4, 1);
+        term.attr.set_bg_palette(2, false);
+        for ch in ['a', 'b', 'c', 'd'] {
+            term.put_char(ch);
+        }
+        term.set_cursor(0, 0);
+        term.delete_chars(2);
+        assert!(term.cells[0]
+            .iter()
+            .skip(2)
+            .all(|cell| cell
+                .as_ref()
+                .map(|c| c.background_color.as_str() == "color2")
+                .unwrap_or(false)));
+    }
+
+    #[test]
+    fn sgr_background_colors_are_recorded() {
+        let mut term = TerminalEmulator::new(4, 1);
+        term.attr.set_sgr(&[42]);
+        term.put_char('a');
+        assert_eq!(
+            term.cells[0][0]
+                .as_ref()
+                .map(|c| c.background_color.as_str()),
+            Some("color2")
+        );
+    }
+
+    #[test]
+    fn parser_applies_background_sgr_sequences() {
+        let mut term = TerminalEmulator::new(4, 1);
+        let mut parser = Parser::new();
+        parser.advance(&mut term, b"\x1b[30m\x1b[42mX");
+        assert_eq!(
+            term.cells[0][0]
+                .as_ref()
+                .map(|c| c.background_color.as_str()),
+            Some("color2")
+        );
+    }
+
+    #[test]
+    fn parser_moves_to_absolute_row_with_csi_d() {
+        let mut term = TerminalEmulator::new(4, 3);
+        let mut parser = Parser::new();
+        parser.advance(&mut term, b"\x1b[3dX");
+        assert!(term.cells[2][0].as_ref().is_some());
+        assert!(term.cells[0][0].is_none());
+    }
+}
+
 pub fn _group_by_time(
     event_records: impl IntoIterator<Item = AsciiCastV2Event>,
     min_rec_duration: u64,
@@ -668,6 +762,36 @@ impl TerminalEmulator {
         }
     }
 
+    fn blank_cell_for_attrs(&self) -> Option<CharacterCell> {
+        let (fg, bg) = self.attr.effective_colors();
+        if bg == "background" {
+            return None;
+        }
+        let mut cell = CharacterCell::new(" ");
+        cell.color = fg;
+        cell.background_color = bg;
+        cell.bold = self.attr.bold;
+        cell.italics = self.attr.italics;
+        cell.underscore = self.attr.underline;
+        cell.strikethrough = self.attr.strikethrough;
+        Some(cell)
+    }
+
+    fn fill_slice(slice: &mut [Option<CharacterCell>], fill: Option<&CharacterCell>) {
+        match fill {
+            Some(blank) => {
+                for cell in slice.iter_mut() {
+                    *cell = Some(blank.clone());
+                }
+            }
+            None => {
+                for cell in slice.iter_mut() {
+                    *cell = None;
+                }
+            }
+        }
+    }
+
     fn set_cursor(&mut self, row: usize, col: usize) {
         self.cursor_row = row.min(self.height.saturating_sub(1));
         self.cursor_col = col.min(self.width.saturating_sub(1));
@@ -692,44 +816,54 @@ impl TerminalEmulator {
     }
 
     fn clear_screen(&mut self) {
+        let fill = self.blank_cell_for_attrs();
+        let fill_ref = fill.as_ref();
         for row in &mut self.cells {
-            for cell in row.iter_mut() {
-                *cell = None;
-            }
+            Self::fill_slice(row, fill_ref);
         }
         self.set_cursor(0, 0);
     }
 
     fn clear_to_screen_end(&mut self) {
-        self.clear_line_from_cursor();
+        if self.cursor_row >= self.height {
+            return;
+        }
+        let fill = self.blank_cell_for_attrs();
+        let fill_ref = fill.as_ref();
+        let current_row = &mut self.cells[self.cursor_row][self.cursor_col..];
+        Self::fill_slice(current_row, fill_ref);
         for r in (self.cursor_row + 1)..self.height {
-            for cell in self.cells[r].iter_mut() {
-                *cell = None;
-            }
+            Self::fill_slice(&mut self.cells[r], fill_ref);
         }
     }
 
     fn clear_line_from_cursor(&mut self) {
         if self.cursor_row < self.height {
-            for cell in self.cells[self.cursor_row].iter_mut().skip(self.cursor_col) {
-                *cell = None;
-            }
+            let fill = self.blank_cell_for_attrs();
+            let fill_ref = fill.as_ref();
+            let slice = &mut self.cells[self.cursor_row][self.cursor_col..];
+            Self::fill_slice(slice, fill_ref);
         }
     }
 
     fn clear_line(&mut self) {
         if self.cursor_row < self.height {
-            for cell in self.cells[self.cursor_row].iter_mut() {
-                *cell = None;
-            }
+            let fill = self.blank_cell_for_attrs();
+            let fill_ref = fill.as_ref();
+            let row = &mut self.cells[self.cursor_row];
+            Self::fill_slice(row, fill_ref);
         }
     }
 
     fn scroll_up(&mut self, rows: usize) {
         let rows = rows.min(self.height);
+        let fill = self.blank_cell_for_attrs();
+        let fill_ref = fill.as_ref();
         for _ in 0..rows {
             self.cells.remove(0);
-            self.cells.push(vec![None; self.width]);
+            let mut new_row = vec![None; self.width];
+            Self::fill_slice(&mut new_row, fill_ref);
+            self.cells.push(new_row);
         }
         self.cursor_row = self.height.saturating_sub(1);
     }
@@ -746,6 +880,8 @@ impl TerminalEmulator {
         if count == 0 {
             return;
         }
+        let fill = self.blank_cell_for_attrs();
+        let fill_ref = fill.as_ref();
         let row = &mut self.cells[self.cursor_row];
         for offset in (0..(available - count)).rev() {
             let src = self.cursor_col + offset;
@@ -753,9 +889,9 @@ impl TerminalEmulator {
             let value = row.get(src).cloned().unwrap_or(None);
             row[dst] = value;
         }
-        for offset in 0..count {
-            row[self.cursor_col + offset] = None;
-        }
+        let start = self.cursor_col;
+        let end = self.cursor_col + count;
+        Self::fill_slice(&mut row[start..end], fill_ref);
     }
 
     fn delete_chars(&mut self, count: usize) {
@@ -770,11 +906,16 @@ impl TerminalEmulator {
         if count == 0 {
             return;
         }
+        let fill = self.blank_cell_for_attrs();
+        let fill_ref = fill.as_ref();
         let row = &mut self.cells[self.cursor_row];
         for offset in 0..available {
             let dest = self.cursor_col + offset;
             let src = dest + count;
-            let value = row.get(src).cloned().unwrap_or(None);
+            let mut value = row.get(src).cloned().unwrap_or(None);
+            if value.is_none() {
+                value = fill_ref.cloned();
+            }
             row[dest] = value;
         }
     }
@@ -791,10 +932,12 @@ impl TerminalEmulator {
         if count == 0 {
             return;
         }
+        let fill = self.blank_cell_for_attrs();
+        let fill_ref = fill.as_ref();
         let row = &mut self.cells[self.cursor_row];
-        for offset in 0..count {
-            row[self.cursor_col + offset] = None;
-        }
+        let start = self.cursor_col;
+        let end = self.cursor_col + count;
+        Self::fill_slice(&mut row[start..end], fill_ref);
     }
 
     fn put_char(&mut self, ch: char) {
@@ -935,6 +1078,10 @@ impl Perform for TerminalEmulator {
                 let row = p(0, 1).saturating_sub(1) as usize;
                 let col = p(1, 1).saturating_sub(1) as usize;
                 self.set_cursor(row, col);
+            }
+            'd' => {
+                let row = p(0, 1).saturating_sub(1) as usize;
+                self.set_cursor(row, self.cursor_col);
             }
             'J' => match p(0, 0) {
                 0 => self.clear_to_screen_end(),
