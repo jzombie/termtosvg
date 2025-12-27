@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use termtosvg::anim::CharacterCell;
-use termtosvg::asciicast::{AsciiCastV2Event, AsciiCastV2Header, AsciiCastV2Record};
+use termtosvg::asciicast::{self, AsciiCastV2Event, AsciiCastV2Header, AsciiCastV2Record};
 use termtosvg::term;
 
 fn header() -> AsciiCastV2Record {
@@ -113,4 +113,52 @@ fn timed_frames_handles_erase_chars() {
     assert_eq!(visible_text(line), "ad");
     assert!(line.get(&1).is_none());
     assert!(line.get(&2).is_none());
+}
+
+#[test]
+fn recorded_cast_contains_green_background_cells() {
+    let cast_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/htop.cast");
+    let records = asciicast::read_records(cast_path).expect("htop.cast should parse");
+    let (_geometry, frames_iter) = term::timed_frames(records, 1, None, 1000);
+    use std::collections::BTreeSet;
+
+    let mut found = false;
+    let mut seen = BTreeSet::new();
+    let mut header_colors = BTreeSet::new();
+    for (idx, frame) in frames_iter.take(300).enumerate() {
+        if header_colors.is_empty() {
+            if let Some((_row_idx, line)) = frame
+                .buffer
+                .iter()
+                .find(|(_, line)| visible_text(line).contains("PID USER"))
+            {
+                for cell in line.values() {
+                    if cell.background_color != "background" {
+                        header_colors.insert(cell.background_color.clone());
+                    }
+                }
+            }
+        }
+        for row in frame.buffer.values() {
+            for cell in row.values() {
+                if cell.background_color != "background" {
+                    seen.insert(cell.background_color.clone());
+                }
+                if cell.background_color == "color2" {
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                break;
+            }
+        }
+        if found {
+            println!("found after frame {idx}");
+            break;
+        }
+    }
+    println!("seen backgrounds: {:?}", seen);
+    println!("header colors: {:?}", header_colors);
+    assert!(found, "expected to capture color2 background cells in sample cast");
 }
