@@ -295,11 +295,9 @@ fn strip_ansi_sequences(input: &str) -> String {
                             if ch == '\u{0007}' {
                                 break;
                             }
-                            if ch == '\u{001b}' {
-                                if i < bytes.len() && bytes[i] as char == '\\' {
-                                    i += 1;
-                                    break;
-                                }
+                            if ch == '\u{001b}' && i < bytes.len() && bytes[i] as char == '\\' {
+                                i += 1;
+                                break;
                             }
                         }
                     }
@@ -320,7 +318,7 @@ fn strip_ansi_sequences(input: &str) -> String {
 
 #[cfg(test)]
 mod prompt_tests {
-    use super::{strip_ansi_sequences, strip_prompt_markers, is_marker_line};
+    use super::{is_marker_line, strip_ansi_sequences, strip_prompt_markers};
 
     #[test]
     fn removes_standalone_percent_line() {
@@ -372,12 +370,11 @@ mod terminal_emulator_tests {
         let mut term = TerminalEmulator::new(4, 1);
         term.attr.inverse = true;
         term.clear_line_from_cursor();
-        assert!(term.cells[0]
-            .iter()
-            .all(|cell| cell
-                .as_ref()
+        assert!(term.cells[0].iter().all(|cell| {
+            cell.as_ref()
                 .map(|c| c.background_color.as_str() == "foreground")
-                .unwrap_or(false)));
+                .unwrap_or(false)
+        }));
     }
 
     #[test]
@@ -392,14 +389,11 @@ mod terminal_emulator_tests {
         let mut term = TerminalEmulator::new(2, 2);
         term.attr.set_bg_palette(2, false);
         term.clear_screen();
-        assert!(term
-            .cells
-            .iter()
-            .flatten()
-            .all(|cell| cell
-                .as_ref()
+        assert!(term.cells.iter().flatten().all(|cell| {
+            cell.as_ref()
                 .map(|c| c.background_color.as_str() == "color2")
-                .unwrap_or(false)));
+                .unwrap_or(false)
+        }));
     }
 
     #[test]
@@ -411,13 +405,11 @@ mod terminal_emulator_tests {
         }
         term.set_cursor(0, 0);
         term.delete_chars(2);
-        assert!(term.cells[0]
-            .iter()
-            .skip(2)
-            .all(|cell| cell
-                .as_ref()
+        assert!(term.cells[0].iter().skip(2).all(|cell| {
+            cell.as_ref()
                 .map(|c| c.background_color.as_str() == "color2")
-                .unwrap_or(false)));
+                .unwrap_or(false)
+        }));
     }
 
     #[test]

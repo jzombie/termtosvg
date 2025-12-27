@@ -126,16 +126,15 @@ fn recorded_cast_contains_green_background_cells() {
     let mut seen = BTreeSet::new();
     let mut header_colors = BTreeSet::new();
     for (idx, frame) in frames_iter.take(300).enumerate() {
-        if header_colors.is_empty() {
-            if let Some((_row_idx, line)) = frame
+        if header_colors.is_empty()
+            && let Some((_row_idx, line)) = frame
                 .buffer
                 .iter()
                 .find(|(_, line)| visible_text(line).contains("PID USER"))
-            {
-                for cell in line.values() {
-                    if cell.background_color != "background" {
-                        header_colors.insert(cell.background_color.clone());
-                    }
+        {
+            for cell in line.values() {
+                if cell.background_color != "background" {
+                    header_colors.insert(cell.background_color.clone());
                 }
             }
         }
@@ -160,5 +159,8 @@ fn recorded_cast_contains_green_background_cells() {
     }
     println!("seen backgrounds: {:?}", seen);
     println!("header colors: {:?}", header_colors);
-    assert!(found, "expected to capture color2 background cells in sample cast");
+    assert!(
+        found,
+        "expected to capture color2 background cells in sample cast"
+    );
 }
