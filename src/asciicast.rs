@@ -1,5 +1,5 @@
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::ffi::OsStr;
+use std::io::Read;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -215,33 +215,40 @@ impl AsciiCastV2Record {
 }
 
 pub fn read_records<P: AsRef<Path>>(path: P) -> Result<Vec<AsciiCastV2Record>, AsciiCastError> {
-    let file = File::open(path.as_ref())?;
-    let mut reader = BufReader::new(file);
-    let mut buf = String::new();
+    // Support reading from stdin when path is "-". To allow a fallback from
+    // asciicast v2 (line-by-line JSON) to v1 (single JSON object), we first
+    // read the entire input into a string and then attempt both parsers.
+    let is_stdin = path.as_ref().as_os_str() == OsStr::new("-");
+    let content = if is_stdin {
+        let mut s = String::new();
+        std::io::stdin().lock().read_to_string(&mut s)?;
+        s
+    } else {
+        std::fs::read_to_string(path.as_ref())?
+    };
+
     let mut records = Vec::new();
 
-    // First try v2 line by line
-    while reader.read_line(&mut buf)? != 0 {
-        let line = buf.trim_end_matches(['\n', '\r'].as_ref());
+    // Try v2: line by line JSON records
+    for raw_line in content.lines() {
+        let line = raw_line.trim_end_matches(['\n', '\r'].as_ref()).trim();
         if line.is_empty() {
-            buf.clear();
             continue;
         }
         match AsciiCastV2Record::from_json_line(line) {
             Ok(rec) => records.push(rec),
             Err(err) => {
                 // Fall back to v1 parsing using full file contents
-                return read_v1_records(path).map_err(|_| err);
+                return read_v1_records_from_str(&content).map_err(|_| err);
             }
         }
-        buf.clear();
     }
+
     Ok(records)
 }
 
-fn read_v1_records<P: AsRef<Path>>(path: P) -> Result<Vec<AsciiCastV2Record>, AsciiCastError> {
-    let content = std::fs::read_to_string(path)?;
-    let value: Value = serde_json::from_str(&content)?;
+fn read_v1_records_from_str(content: &str) -> Result<Vec<AsciiCastV2Record>, AsciiCastError> {
+    let value: Value = serde_json::from_str(content)?;
     let header_keys = ["version", "width", "height", "stdout"];
     if !header_keys.iter().all(|k| value.get(k).is_some()) {
         return Err(AsciiCastError::Message(

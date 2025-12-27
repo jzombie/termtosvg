@@ -1,14 +1,16 @@
 use std::fs::File;
 use std::io::Write;
+use std::os::fd::BorrowedFd;
 use std::os::unix::io::RawFd;
 
 use anyhow::Result;
 use clap::{Args, Command, CommandFactory, FromArgMatches, Parser, Subcommand};
+use nix::unistd::isatty;
 use rand::{Rng, distr::Alphanumeric};
 use tempfile::NamedTempFile;
 
 use crate::anim;
-use crate::asciicast::{self, AsciiCastV2Record};
+use crate::asciicast::{self, AsciiCastV2Event, AsciiCastV2Header, AsciiCastV2Record};
 use crate::config;
 use crate::term::{self, TimedFrame};
 
@@ -194,8 +196,8 @@ pub fn run(args: Vec<String>, input_fileno: RawFd, output_fileno: RawFd) -> Resu
             println!("rendered to {output_path}");
         }
         None => {
-            // record and render on the fly
-            eprintln!("Recording started, press Ctrl-D to finish");
+            let stdin_is_tty =
+                unsafe { isatty(BorrowedFd::borrow_raw(input_fileno)).unwrap_or(true) };
             let template_name = cli.template.clone().unwrap_or(default_template);
             let template_bytes = anim::validate_template(&template_name, &templates)?;
             let output_path = cli
@@ -204,19 +206,32 @@ pub fn run(args: Vec<String>, input_fileno: RawFd, output_fileno: RawFd) -> Resu
                 .or_else(|| cli.output_path_pos.clone())
                 .unwrap_or_else(|| default_output_path(cli.still_frames));
             let geometry = geometry_or_default(cli.screen_geometry.as_deref(), output_fileno)?;
-            let process_args = parse_process_args(&cli.command_to_record);
-            record_render_subcommand(
-                process_args,
-                cli.still_frames,
-                template_bytes.as_slice(),
-                geometry,
-                input_fileno,
-                output_fileno,
-                &output_path,
-                cli.min_frame_duration,
-                cli.max_frame_duration,
-                cli.loop_delay,
-            )?;
+            if stdin_is_tty {
+                eprintln!("Recording started, press Ctrl-D to finish");
+                let process_args = parse_process_args(&cli.command_to_record);
+                record_render_subcommand(
+                    process_args,
+                    cli.still_frames,
+                    template_bytes.as_slice(),
+                    geometry,
+                    input_fileno,
+                    output_fileno,
+                    &output_path,
+                    cli.min_frame_duration,
+                    cli.max_frame_duration,
+                    cli.loop_delay,
+                )?;
+            } else {
+                render_stdin_stream(
+                    cli.still_frames,
+                    template_bytes.as_slice(),
+                    geometry,
+                    &output_path,
+                    cli.min_frame_duration,
+                    cli.max_frame_duration,
+                    cli.loop_delay,
+                )?;
+            }
             println!("rendered to {output_path}");
         }
     }
@@ -271,19 +286,15 @@ fn render_subcommand(
     loop_delay: u64,
 ) -> Result<()> {
     let records = asciicast::read_records(cast_filename)?;
-    let (geometry, frames_iter) =
-        term::timed_frames(records, min_frame_duration, max_frame_duration, loop_delay);
-    if still {
-        anim::render_still_frames(
-            frames_iter.collect::<Vec<TimedFrame>>(),
-            geometry,
-            output_path,
-            template,
-        )?;
-    } else {
-        anim::render_animation(frames_iter, geometry, output_path, template)?;
-    }
-    Ok(())
+    render_records(
+        still,
+        template,
+        records,
+        output_path,
+        min_frame_duration,
+        max_frame_duration,
+        loop_delay,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -319,6 +330,69 @@ fn record_render_subcommand(
         anim::render_animation(frames_iter, geometry, output_path, template)?;
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_records(
+    still: bool,
+    template: &[u8],
+    records: Vec<AsciiCastV2Record>,
+    output_path: &str,
+    min_frame_duration: u64,
+    max_frame_duration: Option<u64>,
+    loop_delay: u64,
+) -> Result<()> {
+    let (geometry, frames_iter) =
+        term::timed_frames(records, min_frame_duration, max_frame_duration, loop_delay);
+    if still {
+        anim::render_still_frames(
+            frames_iter.collect::<Vec<TimedFrame>>(),
+            geometry,
+            output_path,
+            template,
+        )?;
+    } else {
+        anim::render_animation(frames_iter, geometry, output_path, template)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_stdin_stream(
+    still: bool,
+    template: &[u8],
+    geometry: (u16, u16),
+    output_path: &str,
+    min_frame_duration: u64,
+    max_frame_duration: Option<u64>,
+    loop_delay: u64,
+) -> Result<()> {
+    use std::io::Read;
+
+    let mut stdin = std::io::stdin();
+    let mut buf = String::new();
+    stdin.read_to_string(&mut buf)?;
+    if buf.is_empty() {
+        anyhow::bail!("No data received on stdin to render");
+    }
+
+    let mut records = Vec::new();
+    records.push(AsciiCastV2Record::Header(AsciiCastV2Header::new(
+        2, geometry.0, geometry.1, None, None,
+    )?));
+    records.push(AsciiCastV2Record::Event(AsciiCastV2Event::new(
+        0.0, "o", &buf, None,
+    )?));
+
+    render_records(
+        still,
+        template,
+        records,
+        output_path,
+        min_frame_duration,
+        max_frame_duration,
+        loop_delay,
+    )
 }
 
 fn default_output_path(still_frames: bool) -> String {

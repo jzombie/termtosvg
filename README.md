@@ -28,6 +28,19 @@ Render an existing asciicast with a specific template and still frame mode:
 cargo run -- render demo.cast --template window_frame --still-frames --output window_frame.svg
 ```
 
+Pipe any command into `termtosvg` and it will render the incoming text (ANSI
+colors included) without spawning a child shell:
+
+```sh
+neofetch | cargo run -- --screen-geometry 82x24 --output neofetch.svg
+```
+
+To render an asciicast streamed on stdin, pass `-` as the input file:
+
+```sh
+cat demo.cast | cargo run -- render - --output piped.svg
+```
+
 `--template` accepts either a built-in template name (no `.svg` extension) or a
 path to a custom SVG template.
 

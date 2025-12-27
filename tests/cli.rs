@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::os::unix::io::AsRawFd;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use assert_cmd::prelude::*;
 use tempfile::tempdir;
@@ -108,6 +108,54 @@ fn render_honors_namespace_override() {
     assert_valid_svg(&svg_path);
     let svg = std::fs::read_to_string(&svg_path).unwrap();
     assert!(svg.contains(&format!("xmlns:termtosvg=\"{namespace}\"")));
+}
+
+#[test]
+fn default_command_reads_piped_stdin() {
+    let output_dir = tempdir().unwrap();
+    let svg_path = output_dir.path().join("stdin.svg");
+    let mut child = Command::new(assert_cmd::cargo::cargo_bin!("termtosvg"))
+        .args(["-g", "20x5", "-o", svg_path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("spawn termtosvg");
+
+    {
+        let stdin = child.stdin.as_mut().expect("child stdin available");
+        writeln!(stdin, "\u{1b}[31mhello from stdin\u{1b}[0m").unwrap();
+    }
+
+    assert!(child.wait().unwrap().success());
+    assert_valid_svg(&svg_path);
+    let svg = std::fs::read_to_string(&svg_path).unwrap();
+    assert!(svg.contains("hello from stdin"));
+}
+
+#[test]
+fn render_subcommand_accepts_dash_stdin() {
+    let output_dir = tempdir().unwrap();
+    let svg_path = output_dir.path().join("dash.svg");
+    let mut child = Command::new(assert_cmd::cargo::cargo_bin!("termtosvg"))
+        .args(["render", "-", svg_path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("spawn termtosvg render -");
+
+    {
+        let stdin = child.stdin.as_mut().expect("child stdin available");
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"version":2,"width":80,"height":24})
+        )
+        .unwrap();
+        writeln!(stdin, "{}", serde_json::json!([0.0, "o", "dash stdin"])).unwrap();
+    }
+
+    assert!(child.wait().unwrap().success());
+    assert_valid_svg(&svg_path);
+    let svg = std::fs::read_to_string(&svg_path).unwrap();
+    assert!(svg.contains("dash stdin"));
 }
 
 fn assert_valid_svg(path: &std::path::Path) {
