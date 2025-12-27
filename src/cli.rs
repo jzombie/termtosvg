@@ -414,43 +414,6 @@ fn render_records(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_stdin_stream(
-    still: bool,
-    template: &[u8],
-    geometry: (u16, u16),
-    output_path: &str,
-    min_frame_duration: u64,
-    max_frame_duration: Option<u64>,
-    loop_delay: u64,
-) -> Result<()> {
-    use std::io::Read;
-
-    let mut stdin = std::io::stdin();
-    let mut buf = String::new();
-    stdin.read_to_string(&mut buf)?;
-    if buf.is_empty() {
-        anyhow::bail!("No data received on stdin to render");
-    }
-
-    let records = vec![
-        AsciiCastV2Record::Header(AsciiCastV2Header::new(
-            2, geometry.0, geometry.1, None, None,
-        )?),
-        AsciiCastV2Record::Event(AsciiCastV2Event::new(0.0, "o", &buf, None)?),
-    ];
-
-    render_records(
-        still,
-        template,
-        records,
-        output_path,
-        min_frame_duration,
-        max_frame_duration,
-        loop_delay,
-    )
-}
-
 fn default_output_path(still_frames: bool) -> String {
     if still_frames {
         temp_still_dir().expect("tempdir")
