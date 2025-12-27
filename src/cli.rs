@@ -3,7 +3,7 @@ use std::io::Write;
 use std::os::unix::io::RawFd;
 
 use anyhow::Result;
-use clap::{Args, Parser, Subcommand, FromArgMatches, CommandFactory, Command};
+use clap::{Args, Command, CommandFactory, FromArgMatches, Parser, Subcommand};
 use rand::{Rng, distr::Alphanumeric};
 use tempfile::NamedTempFile;
 
@@ -148,7 +148,8 @@ pub fn run(args: Vec<String>, input_fileno: RawFd, output_fileno: RawFd) -> Resu
     let matches = cmd
         .try_get_matches_from(&args)
         .map_err(|e: clap::Error| anyhow::anyhow!(e.to_string()))?;
-    let cli = Cli::from_arg_matches(&matches).map_err(|e: clap::Error| anyhow::anyhow!(e.to_string()))?;
+    let cli =
+        Cli::from_arg_matches(&matches).map_err(|e: clap::Error| anyhow::anyhow!(e.to_string()))?;
     let templates = config::default_templates();
     let default_template = "powershell".to_string();
     match &cli.command {
